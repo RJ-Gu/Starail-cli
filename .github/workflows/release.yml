@@ -1,0 +1,94 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  issues: read
+  pull-requests: read
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Check release version
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          CARGO_VERSION="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; data = json.load(sys.stdin); root = data["workspace_members"][0]; print(next(pkg["version"] for pkg in data["packages"] if pkg["id"] == root))')"
+          if [[ "$TAG_VERSION" != "$CARGO_VERSION" ]]; then
+            printf 'Tag version %s does not match Cargo.toml version %s\n' "$TAG_VERSION" "$CARGO_VERSION" >&2
+            exit 1
+          fi
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Package
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          PKG="starail-v${VERSION}-x86_64-unknown-linux-gnu"
+          mkdir -p "$PKG"
+          cp target/release/starail "$PKG/"
+          cp README.md "$PKG/"
+          tar -czf "$PKG.tar.gz" "$PKG"
+          sha256sum "$PKG.tar.gz" > "$PKG.tar.gz.sha256"
+
+      - name: Generate release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          CURRENT_COMMIT="$(git rev-list -n 1 "$GITHUB_REF_NAME")"
+          PREVIOUS_TAG="$(git describe --tags --match 'v*' --abbrev=0 "${CURRENT_COMMIT}^" 2>/dev/null || true)"
+
+          NOTES_ARGS=(-f "tag_name=$GITHUB_REF_NAME")
+          if [[ -n "$PREVIOUS_TAG" ]]; then
+            NOTES_ARGS+=(-f "previous_tag_name=$PREVIOUS_TAG")
+            RANGE="$PREVIOUS_TAG..$GITHUB_REF_NAME"
+          else
+            RANGE="$GITHUB_REF_NAME"
+          fi
+
+          gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" "${NOTES_ARGS[@]}" --jq .body > generated-notes.md
+
+          {
+            printf '## Release Activity\n\n'
+            if [[ -n "$PREVIOUS_TAG" ]]; then
+              printf '- Previous release: `%s`\n' "$PREVIOUS_TAG"
+            else
+              printf '- Previous release: none\n'
+            fi
+            printf '- Current release: `%s`\n\n' "$GITHUB_REF_NAME"
+
+            printf '### Issues and Pull Requests\n\n'
+            sed 's/^## /### /' generated-notes.md
+
+            printf '\n### Push / Commit Operations\n\n'
+            if [[ "$(git rev-list --count "$RANGE")" -eq 0 ]]; then
+              printf '- No commits found in this release range.\n'
+            else
+              git log --reverse --format='%H%x09%h%x09%s%x09%an' "$RANGE" | while IFS=$'\t' read -r sha short subject author; do
+                printf '- [`%s`](https://github.com/%s/commit/%s) %s (%s)\n' "$short" "$GITHUB_REPOSITORY" "$sha" "$subject" "$author"
+              done
+            fi
+          } > release-notes.md
+
+      - name: Upload Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release-notes.md
+          files: |
+            starail-*.tar.gz
+            starail-*.sha256
