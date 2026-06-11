@@ -31,10 +31,8 @@ enum Action {
     StartStop,
     Profiles,
     ListProxies,
-    SwitchMode,
     ToggleShellProxy,
-    Logs,
-    InstallCore,
+    Settings,
 }
 
 impl Action {
@@ -43,10 +41,8 @@ impl Action {
             Self::StartStop => "Start/stop mihomo",
             Self::Profiles => "Profiles",
             Self::ListProxies => "Proxy groups and nodes",
-            Self::SwitchMode => "Switch mode",
             Self::ToggleShellProxy => "Toggle shell proxy",
-            Self::Logs => "Logs",
-            Self::InstallCore => "Check/update core",
+            Self::Settings => "Settings",
         }
     }
 
@@ -55,10 +51,8 @@ impl Action {
             Self::StartStop => "Start when stopped; stop when running. Restart by pressing twice.",
             Self::Profiles => "Manage local configs and subscription-backed profiles.",
             Self::ListProxies => "Inspect groups and selectable nodes through the controller.",
-            Self::SwitchMode => "Set mihomo to rule, global, or direct mode.",
             Self::ToggleShellProxy => "Enable or disable Starail's shell proxy block.",
-            Self::Logs => "Read recent mihomo runtime logs.",
-            Self::InstallCore => "Check latest mihomo and update when needed.",
+            Self::Settings => "Review Starail preferences and maintenance tools.",
         }
     }
 }
@@ -78,10 +72,8 @@ impl App {
                 Action::StartStop,
                 Action::Profiles,
                 Action::ListProxies,
-                Action::SwitchMode,
                 Action::ToggleShellProxy,
-                Action::Logs,
-                Action::InstallCore,
+                Action::Settings,
             ],
             selected: 0,
             status: None,
@@ -113,6 +105,7 @@ impl App {
 
 enum Screen {
     Home,
+    Settings(SettingsPage),
     Profiles(ProfilePage),
     Form(InputForm),
     Mode(ModePage),
@@ -121,6 +114,124 @@ enum Screen {
     ProxyGroup(ProxyGroupPage),
     Output(OutputPage),
     Confirm(ConfirmPage),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingsItemKind {
+    InterfaceDisplay,
+    MixedPort,
+    SwitchMode,
+    Logs,
+    CheckUpdateCore,
+}
+
+impl SettingsItemKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::InterfaceDisplay => "Interface display",
+            Self::MixedPort => "Custom port",
+            Self::SwitchMode => "Switch mode",
+            Self::Logs => "Logs",
+            Self::CheckUpdateCore => "Check/update core",
+        }
+    }
+
+    fn summary(self) -> &'static str {
+        match self {
+            Self::InterfaceDisplay => "Terminal UI presentation",
+            Self::MixedPort => "Default mixed-port value",
+            Self::SwitchMode => "Rule, global, or direct mode",
+            Self::Logs => "Recent mihomo runtime logs",
+            Self::CheckUpdateCore => "Managed mihomo core maintenance",
+        }
+    }
+
+    fn status(self) -> &'static str {
+        match self {
+            Self::InterfaceDisplay => "default",
+            Self::MixedPort => "edit",
+            Self::SwitchMode | Self::Logs => "open",
+            Self::CheckUpdateCore => "confirm",
+        }
+    }
+
+    fn detail_lines(self) -> Vec<Line<'static>> {
+        match self {
+            Self::InterfaceDisplay => vec![
+                setting_detail_line("Name", self.label()),
+                setting_detail_line("Status", self.status()),
+                setting_detail_line("Scope", "Terminal UI"),
+                Line::from("Display preferences are grouped here."),
+            ],
+            Self::MixedPort => vec![
+                setting_detail_line("Name", self.label()),
+                setting_detail_line("Status", self.status()),
+                setting_detail_line("Scope", "Runtime config"),
+                Line::from("Set the mixed-port used when a profile does not define one."),
+            ],
+            Self::SwitchMode => vec![
+                setting_detail_line("Name", self.label()),
+                setting_detail_line("Status", self.status()),
+                setting_detail_line("Scope", "mihomo controller"),
+                Line::from("Set mihomo to rule, global, or direct mode."),
+            ],
+            Self::Logs => vec![
+                setting_detail_line("Name", self.label()),
+                setting_detail_line("Status", self.status()),
+                setting_detail_line("Scope", "Runtime"),
+                Line::from("Read recent mihomo runtime logs."),
+            ],
+            Self::CheckUpdateCore => vec![
+                setting_detail_line("Name", self.label()),
+                setting_detail_line("Status", self.status()),
+                setting_detail_line("Scope", "Managed core"),
+                Line::from("Check latest mihomo and update when needed."),
+            ],
+        }
+    }
+}
+
+struct SettingsPage {
+    items: Vec<SettingsItemKind>,
+    selected: usize,
+    message: String,
+}
+
+impl SettingsPage {
+    fn load() -> Self {
+        Self {
+            items: vec![
+                SettingsItemKind::InterfaceDisplay,
+                SettingsItemKind::MixedPort,
+                SettingsItemKind::SwitchMode,
+                SettingsItemKind::Logs,
+                SettingsItemKind::CheckUpdateCore,
+            ],
+            selected: 0,
+            message: "Settings loaded.".to_string(),
+        }
+    }
+
+    fn selected_item(&self) -> Option<SettingsItemKind> {
+        self.items.get(self.selected).copied()
+    }
+
+    fn next(&mut self) {
+        if !self.items.is_empty() {
+            self.selected = (self.selected + 1) % self.items.len();
+        }
+    }
+
+    fn previous(&mut self) {
+        if self.items.is_empty() {
+            return;
+        }
+        self.selected = if self.selected == 0 {
+            self.items.len() - 1
+        } else {
+            self.selected - 1
+        };
+    }
 }
 
 struct ProfilePage {
@@ -174,10 +285,11 @@ struct InputField {
     value: String,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FormSubmit {
     AddSubscription,
     AddLocalProfile,
+    SetMixedPort,
 }
 
 impl InputForm {
@@ -220,6 +332,23 @@ impl InputForm {
             focus: 0,
             submit: FormSubmit::AddLocalProfile,
             message: "Enter moves through fields. Submit from the last field.".to_string(),
+        }
+    }
+
+    fn mixed_port(paths: &StarailPaths) -> Self {
+        let port = AppConfig::load(paths)
+            .map(|config| config.mixed_port)
+            .unwrap_or_else(|_| AppConfig::default().mixed_port);
+        Self {
+            title: "Custom port".to_string(),
+            fields: vec![InputField {
+                label: "Mixed port",
+                placeholder: "7890",
+                value: port.to_string(),
+            }],
+            focus: 0,
+            submit: FormSubmit::SetMixedPort,
+            message: "Enter a TCP port from 1 to 65535.".to_string(),
         }
     }
 
@@ -280,6 +409,7 @@ impl InputForm {
                     vec!["profile".to_string(), "add".to_string(), name, config],
                 ))
             }
+            FormSubmit::SetMixedPort => None,
         }
     }
 }
@@ -665,6 +795,7 @@ impl ConfirmPage {
 enum Effect {
     None,
     Quit,
+    Refresh,
     Run(CommandRequest),
     TestProxyGroup(ProxyGroupPage),
 }
@@ -690,7 +821,7 @@ pub fn run(paths: &StarailPaths) -> Result<()> {
             "Install",
             "Later",
             CommandRequest::static_args("Install mihomo core", &["core", "install"]),
-            "Skipped core install. Use Check/update core when you are ready.",
+            "Skipped core install. Use Settings > Check/update core when you are ready.",
         ));
     }
 
@@ -706,6 +837,7 @@ pub fn run(paths: &StarailPaths) -> Result<()> {
                 match effect {
                     Effect::None => {}
                     Effect::Quit => break,
+                    Effect::Refresh => app.refresh(paths),
                     Effect::Run(request) => run_command(&mut terminal, &mut app, paths, request)?,
                     Effect::TestProxyGroup(page) => {
                         test_proxy_group_nodes(&mut terminal, &mut app, paths, page)?
@@ -730,8 +862,9 @@ fn handle_key(paths: &StarailPaths, app: &mut App, key: KeyEvent) -> Effect {
     let screen = std::mem::replace(&mut app.screen, Screen::Home);
     let (next_screen, effect) = match screen {
         Screen::Home => handle_home_key(paths, app, key),
+        Screen::Settings(page) => handle_settings_key(paths, page, key),
         Screen::Profiles(page) => handle_profiles_key(paths, page, key),
-        Screen::Form(form) => handle_form_key(form, key),
+        Screen::Form(form) => handle_form_key(paths, form, key),
         Screen::Mode(page) => handle_mode_key(page, key),
         Screen::Logs(page) => handle_text_key(page, key, TextPage::logs(paths, 200)),
         Screen::Proxies(page) => handle_proxies_key(paths, page, key),
@@ -782,7 +915,6 @@ fn action_effect(paths: &StarailPaths, action: Action) -> (Screen, Effect) {
         }
         Action::Profiles => (profiles_screen(paths), Effect::None),
         Action::ListProxies => (proxies_screen(paths), Effect::None),
-        Action::SwitchMode => (Screen::Mode(ModePage::load(paths)), Effect::None),
         Action::ToggleShellProxy => {
             if system_proxy::block_present(paths) {
                 (
@@ -813,19 +945,71 @@ fn action_effect(paths: &StarailPaths, action: Action) -> (Screen, Effect) {
                 )
             }
         }
-        Action::Logs => (Screen::Logs(TextPage::logs(paths, 200)), Effect::None),
-        Action::InstallCore => (
-            Screen::Confirm(ConfirmPage::new(
-                "Check/update core",
-                "Check the latest mihomo release and update the managed core if needed?",
-                "Check",
-                "Cancel",
-                CommandRequest::static_args("Check/update core", &["core", "install"]),
-                "No change.",
-            )),
-            Effect::None,
-        ),
+        Action::Settings => (Screen::Settings(SettingsPage::load()), Effect::None),
     }
+}
+
+fn handle_settings_key(
+    paths: &StarailPaths,
+    mut page: SettingsPage,
+    key: KeyEvent,
+) -> (Screen, Effect) {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Backspace => (Screen::Home, Effect::None),
+        KeyCode::Down | KeyCode::Char('j') => {
+            page.next();
+            (Screen::Settings(page), Effect::None)
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            page.previous();
+            (Screen::Settings(page), Effect::None)
+        }
+        KeyCode::Enter => match page.selected_item() {
+            Some(SettingsItemKind::InterfaceDisplay) => {
+                page.message = "Interface display selected.".to_string();
+                (Screen::Settings(page), Effect::None)
+            }
+            Some(SettingsItemKind::MixedPort) => {
+                (Screen::Form(InputForm::mixed_port(paths)), Effect::None)
+            }
+            Some(SettingsItemKind::SwitchMode) => {
+                (Screen::Mode(ModePage::load(paths)), Effect::None)
+            }
+            Some(SettingsItemKind::Logs) => {
+                (Screen::Logs(TextPage::logs(paths, 200)), Effect::None)
+            }
+            Some(SettingsItemKind::CheckUpdateCore) => check_update_core_confirm(),
+            None => (Screen::Settings(page), Effect::None),
+        },
+        _ => (Screen::Settings(page), Effect::None),
+    }
+}
+
+fn check_update_core_confirm() -> (Screen, Effect) {
+    (
+        Screen::Confirm(ConfirmPage::new(
+            "Check/update core",
+            "Check the latest mihomo release and update the managed core if needed?",
+            "Check",
+            "Cancel",
+            CommandRequest::static_args("Check/update core", &["core", "install"]),
+            "No change.",
+        )),
+        Effect::None,
+    )
+}
+
+fn settings_screen_with_message(message: String) -> Screen {
+    let mut page = SettingsPage::load();
+    if let Some(index) = page
+        .items
+        .iter()
+        .position(|item| *item == SettingsItemKind::MixedPort)
+    {
+        page.selected = index;
+    }
+    page.message = message;
+    Screen::Settings(page)
 }
 
 fn handle_profiles_key(
@@ -912,7 +1096,7 @@ fn handle_profiles_key(
     }
 }
 
-fn handle_form_key(mut form: InputForm, key: KeyEvent) -> (Screen, Effect) {
+fn handle_form_key(paths: &StarailPaths, mut form: InputForm, key: KeyEvent) -> (Screen, Effect) {
     match key.code {
         KeyCode::Esc => (Screen::Home, Effect::None),
         KeyCode::Tab | KeyCode::Down => {
@@ -927,6 +1111,22 @@ fn handle_form_key(mut form: InputForm, key: KeyEvent) -> (Screen, Effect) {
             if form.focus + 1 < form.fields.len() {
                 form.next();
                 return (Screen::Form(form), Effect::None);
+            }
+
+            if form.submit == FormSubmit::SetMixedPort {
+                let value = form.fields[0].value.trim().to_string();
+                return match save_mixed_port(paths, &value) {
+                    Ok(port) => (
+                        settings_screen_with_message(format!(
+                            "Mixed port saved as {port}. Restart mihomo to apply it."
+                        )),
+                        Effect::Refresh,
+                    ),
+                    Err(error) => {
+                        form.message = format!("{error:#}");
+                        (Screen::Form(form), Effect::None)
+                    }
+                };
             }
 
             match form.submit() {
@@ -948,6 +1148,25 @@ fn handle_form_key(mut form: InputForm, key: KeyEvent) -> (Screen, Effect) {
         }
         _ => (Screen::Form(form), Effect::None),
     }
+}
+
+fn save_mixed_port(paths: &StarailPaths, value: &str) -> Result<u16> {
+    let port = parse_mixed_port(value)?;
+    let mut config = AppConfig::load(paths)?;
+    config.mixed_port = port;
+    config.save(paths)?;
+    Ok(port)
+}
+
+fn parse_mixed_port(value: &str) -> Result<u16> {
+    let port = value
+        .trim()
+        .parse::<u16>()
+        .map_err(|_| anyhow::anyhow!("Port must be a number from 1 to 65535."))?;
+    if port == 0 {
+        return Err(anyhow::anyhow!("Port must be a number from 1 to 65535."));
+    }
+    Ok(port)
 }
 
 fn handle_mode_key(mut page: ModePage, key: KeyEvent) -> (Screen, Effect) {
@@ -1367,6 +1586,7 @@ fn draw(frame: &mut Frame<'_>, app: &App) {
     draw_header(frame, chunks[0], app, &screen_title(&app.screen));
     match &app.screen {
         Screen::Home => draw_home(frame, chunks[1], app),
+        Screen::Settings(page) => draw_settings(frame, chunks[1], page),
         Screen::Profiles(page) => draw_profiles(frame, chunks[1], page),
         Screen::Form(form) => draw_form(frame, chunks[1], form),
         Screen::Mode(page) => draw_mode(frame, chunks[1], page),
@@ -1656,6 +1876,49 @@ fn draw_home(frame: &mut Frame<'_>, area: Rect, app: &App) {
     .wrap(Wrap { trim: false })
     .block(page_block("Selected"));
     frame.render_widget(detail, right[1]);
+}
+
+fn draw_settings(frame: &mut Frame<'_>, area: Rect, page: &SettingsPage) {
+    let body = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(48), Constraint::Percentage(52)])
+        .split(area);
+
+    let items = page
+        .items
+        .iter()
+        .map(|item| ListItem::new(format!("{:<24} {}", item.label(), item.summary())))
+        .collect::<Vec<_>>();
+    let mut state = ListState::default();
+    if !page.items.is_empty() {
+        state.select(Some(page.selected));
+    }
+    let list = List::new(items)
+        .block(page_block("Settings"))
+        .highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+    frame.render_stateful_widget(list, body[0], &mut state);
+
+    let detail_lines = page
+        .selected_item()
+        .map(SettingsItemKind::detail_lines)
+        .unwrap_or_else(|| vec![Line::from("No settings available.")]);
+    let detail = Paragraph::new(detail_lines)
+        .wrap(Wrap { trim: false })
+        .block(page_block("Details"));
+    frame.render_widget(detail, body[1]);
+}
+
+fn setting_detail_line(label: &str, value: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{label}: "), Style::default().fg(Color::Gray)),
+        Span::raw(value.to_string()),
+    ])
 }
 
 fn draw_profiles(frame: &mut Frame<'_>, area: Rect, page: &ProfilePage) {
@@ -2078,6 +2341,35 @@ mod tui_tests {
     use super::*;
 
     #[test]
+    fn settings_page_groups_display_mode_logs_and_core() {
+        let page = SettingsPage::load();
+
+        assert_eq!(
+            page.items,
+            [
+                SettingsItemKind::InterfaceDisplay,
+                SettingsItemKind::MixedPort,
+                SettingsItemKind::SwitchMode,
+                SettingsItemKind::Logs,
+                SettingsItemKind::CheckUpdateCore,
+            ]
+        );
+        assert_eq!(page.items[0].label(), "Interface display");
+        assert_eq!(page.items[1].label(), "Custom port");
+        assert_eq!(page.items[2].label(), "Switch mode");
+        assert_eq!(page.items[3].label(), "Logs");
+        assert_eq!(page.items[4].label(), "Check/update core");
+    }
+
+    #[test]
+    fn parses_mixed_port_values() {
+        assert_eq!(parse_mixed_port("7891").expect("port should parse"), 7891);
+        assert!(parse_mixed_port("0").is_err());
+        assert!(parse_mixed_port("65536").is_err());
+        assert!(parse_mixed_port("abc").is_err());
+    }
+
+    #[test]
     fn proxy_groups_follow_yaml_order() {
         let yaml = serde_yaml::from_str::<serde_yaml::Value>(
             r#"
@@ -2223,6 +2515,7 @@ fn page_block(title: &str) -> Block<'_> {
 fn screen_title(screen: &Screen) -> String {
     match screen {
         Screen::Home => "Dashboard".to_string(),
+        Screen::Settings(_) => "Settings".to_string(),
         Screen::Profiles(_) => "Profiles".to_string(),
         Screen::Form(form) => form.title.clone(),
         Screen::Mode(_) => "Mode".to_string(),
@@ -2254,6 +2547,23 @@ fn footer_content(app: &App) -> FooterContent {
                 FooterHint {
                     key: "q",
                     label: "quit",
+                },
+            ],
+        },
+        Screen::Settings(page) => FooterContent {
+            message: page.message.clone(),
+            hints: vec![
+                FooterHint {
+                    key: "j/k",
+                    label: "move",
+                },
+                FooterHint {
+                    key: "Enter",
+                    label: "select",
+                },
+                FooterHint {
+                    key: "Esc",
+                    label: "back",
                 },
             ],
         },
