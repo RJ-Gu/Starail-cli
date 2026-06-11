@@ -19,9 +19,11 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 use serde_json::Value;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::config::AppConfig;
+use crate::config::{app_language, AppConfig};
 use crate::core;
+use crate::i18n::{self, Language, Message};
 use crate::paths::StarailPaths;
 use crate::platform;
 use crate::{controller, profile, runtime, status, system_proxy};
@@ -31,34 +33,28 @@ enum Action {
     StartStop,
     Profiles,
     ListProxies,
-    SwitchMode,
     ToggleShellProxy,
-    Logs,
-    InstallCore,
+    Settings,
 }
 
 impl Action {
-    fn label(self) -> &'static str {
+    fn label(self, language: Language) -> &'static str {
         match self {
-            Self::StartStop => "Start/stop mihomo",
-            Self::Profiles => "Profiles",
-            Self::ListProxies => "Proxy groups and nodes",
-            Self::SwitchMode => "Switch mode",
-            Self::ToggleShellProxy => "Toggle shell proxy",
-            Self::Logs => "Logs",
-            Self::InstallCore => "Check/update core",
+            Self::StartStop => language.tr(Message::StartStopMihomo),
+            Self::Profiles => language.tr(Message::Profiles),
+            Self::ListProxies => language.tr(Message::ProxyGroupsAndNodes),
+            Self::ToggleShellProxy => language.tr(Message::ToggleShellProxy),
+            Self::Settings => language.tr(Message::Settings),
         }
     }
 
-    fn detail(self) -> &'static str {
+    fn detail(self, language: Language) -> &'static str {
         match self {
-            Self::StartStop => "Start when stopped; stop when running. Restart by pressing twice.",
-            Self::Profiles => "Manage local configs and subscription-backed profiles.",
-            Self::ListProxies => "Inspect groups and selectable nodes through the controller.",
-            Self::SwitchMode => "Set mihomo to rule, global, or direct mode.",
-            Self::ToggleShellProxy => "Enable or disable Starail's shell proxy block.",
-            Self::Logs => "Read recent mihomo runtime logs.",
-            Self::InstallCore => "Check latest mihomo and update when needed.",
+            Self::StartStop => language.tr(Message::StartStopDetail),
+            Self::Profiles => language.tr(Message::ProfilesDetail),
+            Self::ListProxies => language.tr(Message::ProxyGroupsDetail),
+            Self::ToggleShellProxy => language.tr(Message::ToggleShellProxyDetail),
+            Self::Settings => language.tr(Message::SettingsDetail),
         }
     }
 }
@@ -68,29 +64,31 @@ struct App {
     selected: usize,
     status: Option<status::StatusSnapshot>,
     message: String,
+    language: Language,
     screen: Screen,
 }
 
 impl App {
     fn new() -> Self {
+        let language = i18n::detect();
         Self {
             actions: vec![
                 Action::StartStop,
                 Action::Profiles,
                 Action::ListProxies,
-                Action::SwitchMode,
                 Action::ToggleShellProxy,
-                Action::Logs,
-                Action::InstallCore,
+                Action::Settings,
             ],
             selected: 0,
             status: None,
-            message: "Ready.".to_string(),
+            message: language.tr(Message::Ready).to_string(),
+            language,
             screen: Screen::Home,
         }
     }
 
     fn refresh(&mut self, paths: &StarailPaths) {
+        self.language = app_language(paths);
         self.status = status::collect(paths).ok();
     }
 
@@ -113,6 +111,8 @@ impl App {
 
 enum Screen {
     Home,
+    Settings(SettingsPage),
+    Language(LanguagePage),
     Profiles(ProfilePage),
     Form(InputForm),
     Mode(ModePage),
@@ -123,6 +123,170 @@ enum Screen {
     Confirm(ConfirmPage),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingsItemKind {
+    Language,
+    MixedPort,
+    SwitchMode,
+    Logs,
+    CheckUpdateCore,
+}
+
+impl SettingsItemKind {
+    fn label(self, language: Language) -> &'static str {
+        match self {
+            Self::Language => language.tr(Message::Language),
+            Self::MixedPort => language.tr(Message::CustomPort),
+            Self::SwitchMode => language.tr(Message::SwitchMode),
+            Self::Logs => language.tr(Message::Logs),
+            Self::CheckUpdateCore => language.tr(Message::CheckUpdateCore),
+        }
+    }
+
+    fn summary(self, language: Language) -> &'static str {
+        match self {
+            Self::Language => language.tr(Message::LanguageSummary),
+            Self::MixedPort => language.tr(Message::CustomPortSummary),
+            Self::SwitchMode => language.tr(Message::SwitchModeSummary),
+            Self::Logs => language.tr(Message::LogsSummary),
+            Self::CheckUpdateCore => language.tr(Message::CheckUpdateCoreSummary),
+        }
+    }
+
+    fn status(self, language: Language) -> &'static str {
+        match self {
+            Self::Language | Self::MixedPort => language.tr(Message::EditStatus),
+            Self::SwitchMode | Self::Logs => language.tr(Message::OpenStatus),
+            Self::CheckUpdateCore => language.tr(Message::ConfirmStatus),
+        }
+    }
+
+    fn scope(self, language: Language) -> &'static str {
+        match self {
+            Self::Language => language.tr(Message::TerminalUi),
+            Self::MixedPort => language.tr(Message::RuntimeConfig),
+            Self::SwitchMode => language.tr(Message::MihomoController),
+            Self::Logs => language.tr(Message::Runtime),
+            Self::CheckUpdateCore => language.tr(Message::ManagedCore),
+        }
+    }
+
+    fn detail(self, language: Language) -> &'static str {
+        match self {
+            Self::Language => language.tr(Message::LanguageDetail),
+            Self::MixedPort => language.tr(Message::CustomPortDetail),
+            Self::SwitchMode => language.tr(Message::SwitchModeDetail),
+            Self::Logs => language.tr(Message::LogsDetail),
+            Self::CheckUpdateCore => language.tr(Message::CheckUpdateCoreDetail),
+        }
+    }
+
+    fn detail_lines(self, language: Language) -> Vec<Line<'static>> {
+        vec![
+            setting_detail_line(language.tr(Message::Name), self.label(language).to_string()),
+            setting_detail_line(
+                language.tr(Message::Status),
+                self.status(language).to_string(),
+            ),
+            setting_detail_line(
+                language.tr(Message::Scope),
+                self.scope(language).to_string(),
+            ),
+            Line::from(self.detail(language)),
+        ]
+    }
+}
+
+struct SettingsPage {
+    items: Vec<SettingsItemKind>,
+    selected: usize,
+    message: String,
+}
+
+impl SettingsPage {
+    fn load(language: Language) -> Self {
+        Self {
+            items: vec![
+                SettingsItemKind::Language,
+                SettingsItemKind::MixedPort,
+                SettingsItemKind::SwitchMode,
+                SettingsItemKind::Logs,
+                SettingsItemKind::CheckUpdateCore,
+            ],
+            selected: 0,
+            message: language.tr(Message::SettingsLoaded).to_string(),
+        }
+    }
+
+    fn selected_item(&self) -> Option<SettingsItemKind> {
+        self.items.get(self.selected).copied()
+    }
+
+    fn next(&mut self) {
+        if !self.items.is_empty() {
+            self.selected = (self.selected + 1) % self.items.len();
+        }
+    }
+
+    fn previous(&mut self) {
+        if self.items.is_empty() {
+            return;
+        }
+        self.selected = if self.selected == 0 {
+            self.items.len() - 1
+        } else {
+            self.selected - 1
+        };
+    }
+}
+
+struct LanguagePage {
+    options: Vec<Language>,
+    selected: usize,
+    current: Language,
+    message: String,
+}
+
+impl LanguagePage {
+    fn load(current: Language) -> Self {
+        let options = Language::ALL.to_vec();
+        let selected = options
+            .iter()
+            .position(|language| *language == current)
+            .unwrap_or(0);
+        Self {
+            options,
+            selected,
+            current,
+            message: current.tr(Message::ChooseLanguage).to_string(),
+        }
+    }
+
+    fn selected_language(&self) -> Language {
+        self.options
+            .get(self.selected)
+            .copied()
+            .unwrap_or(Language::English)
+    }
+
+    fn next(&mut self) {
+        if !self.options.is_empty() {
+            self.selected = (self.selected + 1) % self.options.len();
+        }
+    }
+
+    fn previous(&mut self) {
+        if self.options.is_empty() {
+            return;
+        }
+        self.selected = if self.selected == 0 {
+            self.options.len() - 1
+        } else {
+            self.selected - 1
+        };
+    }
+}
+
 struct ProfilePage {
     profiles: Vec<profile::ProfileSummary>,
     selected: usize,
@@ -130,11 +294,11 @@ struct ProfilePage {
 }
 
 impl ProfilePage {
-    fn load(paths: &StarailPaths) -> Result<Self> {
+    fn load(paths: &StarailPaths, language: Language) -> Result<Self> {
         Ok(Self {
             profiles: profile::list(paths)?,
             selected: 0,
-            message: "Profiles loaded.".to_string(),
+            message: language.tr(Message::ProfilesLoaded).to_string(),
         })
     }
 
@@ -166,6 +330,7 @@ struct InputForm {
     focus: usize,
     submit: FormSubmit,
     message: String,
+    language: Language,
 }
 
 struct InputField {
@@ -174,52 +339,73 @@ struct InputField {
     value: String,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FormSubmit {
     AddSubscription,
     AddLocalProfile,
+    SetMixedPort,
 }
 
 impl InputForm {
-    fn subscription() -> Self {
+    fn subscription(language: Language) -> Self {
         Self {
-            title: "Add subscription".to_string(),
+            title: language.tr(Message::AddSubscription).to_string(),
             fields: vec![
                 InputField {
-                    label: "Subscription URL",
+                    label: language.tr(Message::SubscriptionUrl),
                     placeholder: "https://example.com/subscription",
                     value: String::new(),
                 },
                 InputField {
-                    label: "Profile name",
-                    placeholder: "blank for automatic",
+                    label: language.tr(Message::ProfileName),
+                    placeholder: language.tr(Message::BlankForAutomatic),
                     value: String::new(),
                 },
             ],
             focus: 0,
             submit: FormSubmit::AddSubscription,
-            message: "Enter moves through fields. Submit from the last field.".to_string(),
+            message: language.tr(Message::FormSubmitHint).to_string(),
+            language,
         }
     }
 
-    fn local_profile() -> Self {
+    fn local_profile(language: Language) -> Self {
         Self {
-            title: "Add local profile".to_string(),
+            title: language.tr(Message::AddLocalProfile).to_string(),
             fields: vec![
                 InputField {
-                    label: "Profile name",
+                    label: language.tr(Message::ProfileName),
                     placeholder: "work",
                     value: String::new(),
                 },
                 InputField {
-                    label: "Config path",
+                    label: language.tr(Message::ConfigPath),
                     placeholder: "/home/user/config.yaml",
                     value: String::new(),
                 },
             ],
             focus: 0,
             submit: FormSubmit::AddLocalProfile,
-            message: "Enter moves through fields. Submit from the last field.".to_string(),
+            message: language.tr(Message::FormSubmitHint).to_string(),
+            language,
+        }
+    }
+
+    fn mixed_port(paths: &StarailPaths, language: Language) -> Self {
+        let port = AppConfig::load(paths)
+            .map(|config| config.mixed_port)
+            .unwrap_or_else(|_| AppConfig::default().mixed_port);
+        Self {
+            title: language.tr(Message::CustomPort).to_string(),
+            fields: vec![InputField {
+                label: language.tr(Message::MixedPortLabel),
+                placeholder: "7890",
+                value: port.to_string(),
+            }],
+            focus: 0,
+            submit: FormSubmit::SetMixedPort,
+            message: language.tr(Message::PortPrompt).to_string(),
+            language,
         }
     }
 
@@ -252,7 +438,10 @@ impl InputForm {
             FormSubmit::AddSubscription => {
                 let url = self.fields[0].value.trim().to_string();
                 if url.is_empty() {
-                    self.message = "Subscription URL is required.".to_string();
+                    self.message = self
+                        .language
+                        .tr(Message::SubscriptionUrlRequired)
+                        .to_string();
                     return None;
                 }
 
@@ -261,25 +450,29 @@ impl InputForm {
                 if !name.is_empty() {
                     args.push(name);
                 }
-                Some(CommandRequest::new("Add subscription", args))
+                Some(CommandRequest::new(
+                    self.language.tr(Message::AddSubscription),
+                    args,
+                ))
             }
             FormSubmit::AddLocalProfile => {
                 let name = self.fields[0].value.trim().to_string();
                 let config = self.fields[1].value.trim().to_string();
                 if name.is_empty() {
-                    self.message = "Profile name is required.".to_string();
+                    self.message = self.language.tr(Message::ProfileNameRequired).to_string();
                     return None;
                 }
                 if config.is_empty() {
-                    self.message = "Config path is required.".to_string();
+                    self.message = self.language.tr(Message::ConfigPathRequired).to_string();
                     return None;
                 }
 
                 Some(CommandRequest::new(
-                    "Add local profile",
+                    self.language.tr(Message::AddLocalProfile),
                     vec!["profile".to_string(), "add".to_string(), name, config],
                 ))
             }
+            FormSubmit::SetMixedPort => None,
         }
     }
 }
@@ -292,7 +485,7 @@ struct ModePage {
 }
 
 impl ModePage {
-    fn load(paths: &StarailPaths) -> Self {
+    fn load(paths: &StarailPaths, language: Language) -> Self {
         let modes = vec!["rule", "global", "direct"];
         let (current, message) = match controller::get_configs(paths) {
             Ok(configs) => {
@@ -300,11 +493,11 @@ impl ModePage {
                     .get("mode")
                     .and_then(Value::as_str)
                     .map(ToOwned::to_owned);
-                (mode, "Controller mode loaded.".to_string())
+                (mode, language.tr(Message::ControllerModeLoaded).to_string())
             }
             Err(_) => (
                 None,
-                "Controller is unreachable; selecting a mode will retry.".to_string(),
+                language.tr(Message::ControllerUnreachableRetry).to_string(),
             ),
         };
         let selected = current
@@ -345,25 +538,33 @@ struct TextPage {
 }
 
 impl TextPage {
-    fn logs(paths: &StarailPaths, lines: usize) -> Self {
+    fn logs(paths: &StarailPaths, lines: usize, language: Language) -> Self {
         match tail_file(&paths.log_file, lines) {
             Ok(text) if !text.trim().is_empty() => Self {
-                title: format!("Logs: {}", paths.log_file.display()),
+                title: format!(
+                    "{}: {}",
+                    language.tr(Message::Logs),
+                    paths.log_file.display()
+                ),
                 lines: text.lines().map(ToOwned::to_owned).collect(),
                 scroll: 0,
-                message: "Logs loaded.".to_string(),
+                message: language.tr(Message::LogsLoaded).to_string(),
             },
             Ok(_) => Self {
-                title: format!("Logs: {}", paths.log_file.display()),
-                lines: vec!["Log file is empty.".to_string()],
+                title: format!(
+                    "{}: {}",
+                    language.tr(Message::Logs),
+                    paths.log_file.display()
+                ),
+                lines: vec![language.tr(Message::LogFileEmpty).to_string()],
                 scroll: 0,
-                message: "Logs loaded.".to_string(),
+                message: language.tr(Message::LogsLoaded).to_string(),
             },
             Err(error) => Self {
-                title: "Logs".to_string(),
+                title: language.tr(Message::Logs).to_string(),
                 lines: vec![format!("{error:#}")],
                 scroll: 0,
-                message: "Unable to read logs.".to_string(),
+                message: language.tr(Message::UnableReadLogs).to_string(),
             },
         }
     }
@@ -385,12 +586,14 @@ struct ProxyItem {
 }
 
 impl ProxyItem {
-    fn label(&self) -> String {
+    fn label(&self, language: Language) -> String {
+        let kind = empty_as_dash(&self.kind);
         format!(
-            "{:<30} {:<12} {} nodes",
-            self.name,
-            empty_as_dash(&self.kind),
-            self.children.len()
+            "{} {} {} {}",
+            pad_display_width(&self.name, 30),
+            pad_display_width(&kind, 12),
+            self.children.len(),
+            language.tr(Message::NodeUnit)
         )
     }
 }
@@ -402,22 +605,31 @@ struct ProxyPage {
 }
 
 impl ProxyPage {
-    fn load(paths: &StarailPaths) -> Result<Self> {
+    fn load(paths: &StarailPaths, language: Language) -> Result<Self> {
         let config = AppConfig::load(paths)?;
         let active = config
             .active_profile
             .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("no active profile selected"))?;
+            .ok_or_else(|| anyhow::anyhow!(language.tr(Message::NoActiveProfileSelected)))?;
         let profile_path = paths.profile_config_path(active);
-        let text = fs::read_to_string(&profile_path)
-            .with_context(|| format!("failed to read active profile {}", profile_path.display()))?;
+        let text = fs::read_to_string(&profile_path).with_context(|| {
+            format!(
+                "{} {}",
+                language.tr(Message::FailedReadActiveProfile),
+                profile_path.display()
+            )
+        })?;
         let yaml = serde_yaml::from_str::<serde_yaml::Value>(&text).with_context(|| {
-            format!("failed to parse active profile {}", profile_path.display())
+            format!(
+                "{} {}",
+                language.tr(Message::FailedParseActiveProfile),
+                profile_path.display()
+            )
         })?;
         Ok(Self {
             items: proxy_groups_from_yaml(&yaml),
             selected: 0,
-            message: format!("Loaded proxy groups from profile '{active}'."),
+            message: format!("{} '{active}'.", language.tr(Message::LoadedProxyGroups)),
         })
     }
 
@@ -462,12 +674,12 @@ enum NodeTestStatus {
 }
 
 impl NodeTestStatus {
-    fn display(&self) -> String {
+    fn display(&self, language: Language) -> String {
         match self {
             Self::Untested => "-".to_string(),
-            Self::Testing => "testing...".to_string(),
+            Self::Testing => language.tr(Message::Testing).to_string(),
             Self::Ok(delay) => delay.clone(),
-            Self::Failed => "failed".to_string(),
+            Self::Failed => language.tr(Message::Failed).to_string(),
         }
     }
 
@@ -498,20 +710,24 @@ impl ProxyGroupPage {
         self.group.children.get(self.selected).map(String::as_str)
     }
 
-    fn node_label(&self, index: usize, node: &str) -> String {
+    fn node_label(&self, index: usize, node: &str, language: Language) -> String {
         let status = self
             .node_results
             .get(index)
-            .map(NodeTestStatus::display)
+            .map(|status| status.display(language))
             .unwrap_or_else(|| "-".to_string());
         let node = truncate_for_column(node, 44);
-        format!("{node:<44} {status:>12}")
+        format!(
+            "{} {}",
+            pad_display_width(&node, 44),
+            pad_left_display_width(&status, 12)
+        )
     }
 
-    fn selected_status(&self) -> String {
+    fn selected_status(&self, language: Language) -> String {
         self.node_results
             .get(self.selected)
-            .map(NodeTestStatus::display)
+            .map(|status| status.display(language))
             .unwrap_or_else(|| "-".to_string())
     }
 
@@ -529,17 +745,35 @@ struct OutputPage {
 }
 
 impl OutputPage {
-    fn running(title: &str, args: &[String], elapsed: Duration, preview: Vec<String>) -> Self {
+    fn running(
+        title: &str,
+        args: &[String],
+        elapsed: Duration,
+        preview: Vec<String>,
+        language: Language,
+    ) -> Self {
         let mut lines = vec![
-            format!("Command: starail {}", args.join(" ")),
-            format!("Elapsed: {}s", elapsed.as_secs()),
-            "Status: still running".to_string(),
-            "Press Ctrl-C to cancel this command.".to_string(),
+            format!(
+                "{} starail {}",
+                language.tr(Message::CommandLabel),
+                args.join(" ")
+            ),
+            format!(
+                "{} {}s",
+                language.tr(Message::ElapsedLabel),
+                elapsed.as_secs()
+            ),
+            format!(
+                "{} {}",
+                language.tr(Message::StatusLabel),
+                language.tr(Message::StillRunning)
+            ),
+            language.tr(Message::PressCtrlCCancelCommand).to_string(),
         ];
-        lines.extend(running_hint(args));
+        lines.extend(running_hint(args, language));
         if !preview.is_empty() {
             lines.push(String::new());
-            lines.push("Recent output:".to_string());
+            lines.push(language.tr(Message::RecentOutput).to_string());
             lines.extend(preview);
         }
 
@@ -548,17 +782,17 @@ impl OutputPage {
             lines,
             scroll: 0,
             success: None,
-            message: "Command is running.".to_string(),
+            message: language.tr(Message::CommandRunning).to_string(),
         }
     }
 
-    fn error(title: &str, message: String) -> Self {
+    fn error(title: &str, message: String, language: Language) -> Self {
         Self {
             title: title.to_string(),
             lines: vec![message],
             scroll: 0,
             success: Some(false),
-            message: "Command failed.".to_string(),
+            message: language.tr(Message::CommandFailed).to_string(),
         }
     }
 
@@ -566,12 +800,13 @@ impl OutputPage {
         title: String,
         args: Vec<String>,
         result: io::Result<std::process::Output>,
+        language: Language,
     ) -> Self {
         match result {
             Ok(output) => {
-                let mut lines = command_output_lines(&args, &output);
+                let mut lines = command_output_lines(&args, &output, language);
                 if lines.is_empty() {
-                    lines.push("Command completed with no output.".to_string());
+                    lines.push(language.tr(Message::CommandCompletedNoOutput).to_string());
                 }
                 Self {
                     title,
@@ -579,19 +814,26 @@ impl OutputPage {
                     scroll: 0,
                     success: Some(output.status.success()),
                     message: if output.status.success() {
-                        "Command completed.".to_string()
+                        language.tr(Message::CommandCompleted).to_string()
                     } else {
-                        "Command failed.".to_string()
+                        language.tr(Message::CommandFailed).to_string()
                     },
                 }
             }
-            Err(error) => Self {
-                title,
-                lines: vec![format!("failed to run starail: {error}")],
-                scroll: 0,
-                success: Some(false),
-                message: "Command failed.".to_string(),
-            },
+            Err(error) => {
+                let message = if error.kind() == io::ErrorKind::Interrupted {
+                    language.tr(Message::CommandCanceledByUser).to_string()
+                } else {
+                    format!("{}: {error}", language.tr(Message::FailedRunStarail))
+                };
+                Self {
+                    title,
+                    lines: vec![message],
+                    scroll: 0,
+                    success: Some(false),
+                    message: language.tr(Message::CommandFailed).to_string(),
+                }
+            }
         }
     }
 
@@ -665,6 +907,7 @@ impl ConfirmPage {
 enum Effect {
     None,
     Quit,
+    Refresh,
     Run(CommandRequest),
     TestProxyGroup(ProxyGroupPage),
 }
@@ -682,15 +925,19 @@ pub fn run(paths: &StarailPaths) -> Result<()> {
     app.refresh(paths);
     if core::find_core(paths).is_none() {
         app.screen = Screen::Confirm(ConfirmPage::new(
-            "Install mihomo core",
+            app.language.tr(Message::InstallMihomoCore),
             format!(
-                "mihomo core is missing. Download and install it to {}?",
+                "{} {}?",
+                app.language.tr(Message::MihomoCoreMissingInstallQuestion),
                 paths.core_file.display()
             ),
-            "Install",
-            "Later",
-            CommandRequest::static_args("Install mihomo core", &["core", "install"]),
-            "Skipped core install. Use Check/update core when you are ready.",
+            app.language.tr(Message::Install),
+            app.language.tr(Message::Later),
+            CommandRequest::static_args(
+                app.language.tr(Message::InstallMihomoCore),
+                &["core", "install"],
+            ),
+            app.language.tr(Message::CoreInstallSkipped),
         ));
     }
 
@@ -706,6 +953,7 @@ pub fn run(paths: &StarailPaths) -> Result<()> {
                 match effect {
                     Effect::None => {}
                     Effect::Quit => break,
+                    Effect::Refresh => app.refresh(paths),
                     Effect::Run(request) => run_command(&mut terminal, &mut app, paths, request)?,
                     Effect::TestProxyGroup(page) => {
                         test_proxy_group_nodes(&mut terminal, &mut app, paths, page)?
@@ -730,12 +978,14 @@ fn handle_key(paths: &StarailPaths, app: &mut App, key: KeyEvent) -> Effect {
     let screen = std::mem::replace(&mut app.screen, Screen::Home);
     let (next_screen, effect) = match screen {
         Screen::Home => handle_home_key(paths, app, key),
-        Screen::Profiles(page) => handle_profiles_key(paths, page, key),
-        Screen::Form(form) => handle_form_key(form, key),
-        Screen::Mode(page) => handle_mode_key(page, key),
-        Screen::Logs(page) => handle_text_key(page, key, TextPage::logs(paths, 200)),
-        Screen::Proxies(page) => handle_proxies_key(paths, page, key),
-        Screen::ProxyGroup(page) => handle_proxy_group_key(page, key),
+        Screen::Settings(page) => handle_settings_key(paths, page, key, app.language),
+        Screen::Language(page) => handle_language_key(paths, page, key),
+        Screen::Profiles(page) => handle_profiles_key(paths, page, key, app.language),
+        Screen::Form(form) => handle_form_key(paths, form, key),
+        Screen::Mode(page) => handle_mode_key(page, key, app.language),
+        Screen::Logs(page) => handle_text_key(page, key, TextPage::logs(paths, 200, app.language)),
+        Screen::Proxies(page) => handle_proxies_key(paths, page, key, app.language),
+        Screen::ProxyGroup(page) => handle_proxy_group_key(page, key, app.language),
         Screen::Output(page) => handle_output_key(page, key),
         Screen::Confirm(page) => handle_confirm_key(app, page, key),
     };
@@ -749,7 +999,7 @@ fn handle_home_key(paths: &StarailPaths, app: &mut App, key: KeyEvent) -> (Scree
         KeyCode::Char('q') | KeyCode::Esc => (Screen::Home, Effect::Quit),
         KeyCode::Char('r') => {
             app.refresh(paths);
-            app.message = "Refreshed.".to_string();
+            app.message = app.language.tr(Message::Refreshed).to_string();
             (Screen::Home, Effect::None)
         }
         KeyCode::Down | KeyCode::Char('j') => {
@@ -760,82 +1010,193 @@ fn handle_home_key(paths: &StarailPaths, app: &mut App, key: KeyEvent) -> (Scree
             app.previous_action();
             (Screen::Home, Effect::None)
         }
-        KeyCode::Enter => action_effect(paths, app.selected_action()),
+        KeyCode::Enter => action_effect(paths, app.selected_action(), app.language),
         _ => (Screen::Home, Effect::None),
     }
 }
 
-fn action_effect(paths: &StarailPaths, action: Action) -> (Screen, Effect) {
+fn action_effect(paths: &StarailPaths, action: Action, language: Language) -> (Screen, Effect) {
     match action {
         Action::StartStop => {
             if runtime::is_running(paths) {
                 (
                     Screen::Home,
-                    Effect::Run(CommandRequest::static_args("Stop mihomo", &["stop"])),
+                    Effect::Run(CommandRequest::static_args(
+                        language.tr(Message::StopMihomo),
+                        &["stop"],
+                    )),
                 )
             } else {
                 (
                     Screen::Home,
-                    Effect::Run(CommandRequest::static_args("Start mihomo", &["start"])),
+                    Effect::Run(CommandRequest::static_args(
+                        language.tr(Message::StartMihomo),
+                        &["start"],
+                    )),
                 )
             }
         }
-        Action::Profiles => (profiles_screen(paths), Effect::None),
-        Action::ListProxies => (proxies_screen(paths), Effect::None),
-        Action::SwitchMode => (Screen::Mode(ModePage::load(paths)), Effect::None),
+        Action::Profiles => (profiles_screen(paths, language), Effect::None),
+        Action::ListProxies => (proxies_screen(paths, language), Effect::None),
         Action::ToggleShellProxy => {
             if system_proxy::block_present(paths) {
                 (
                     Screen::Confirm(ConfirmPage::new(
-                        "Disable shell proxy",
-                        "Remove the Starail-owned proxy block from ~/.bashrc?",
-                        "Disable",
-                        "Cancel",
+                        language.tr(Message::DisableShellProxy),
+                        language.tr(Message::DisableShellProxyQuestion),
+                        language.tr(Message::Disable),
+                        language.tr(Message::Cancel),
                         CommandRequest::static_args(
-                            "Disable shell proxy",
+                            language.tr(Message::DisableShellProxy),
                             &["system-proxy", "off"],
                         ),
-                        "No change.",
+                        language.tr(Message::NoChange),
                     )),
                     Effect::None,
                 )
             } else {
                 (
                     Screen::Confirm(ConfirmPage::new(
-                        "Enable shell proxy",
-                        "Add Starail-owned proxy variables to ~/.bashrc for new shells?",
-                        "Enable",
-                        "Cancel",
-                        CommandRequest::static_args("Enable shell proxy", &["system-proxy", "on"]),
-                        "No change.",
+                        language.tr(Message::EnableShellProxy),
+                        language.tr(Message::EnableShellProxyQuestion),
+                        language.tr(Message::Enable),
+                        language.tr(Message::Cancel),
+                        CommandRequest::static_args(
+                            language.tr(Message::EnableShellProxy),
+                            &["system-proxy", "on"],
+                        ),
+                        language.tr(Message::NoChange),
                     )),
                     Effect::None,
                 )
             }
         }
-        Action::Logs => (Screen::Logs(TextPage::logs(paths, 200)), Effect::None),
-        Action::InstallCore => (
-            Screen::Confirm(ConfirmPage::new(
-                "Check/update core",
-                "Check the latest mihomo release and update the managed core if needed?",
-                "Check",
-                "Cancel",
-                CommandRequest::static_args("Check/update core", &["core", "install"]),
-                "No change.",
-            )),
+        Action::Settings => (Screen::Settings(SettingsPage::load(language)), Effect::None),
+    }
+}
+
+fn handle_settings_key(
+    paths: &StarailPaths,
+    mut page: SettingsPage,
+    key: KeyEvent,
+    language: Language,
+) -> (Screen, Effect) {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Backspace => (Screen::Home, Effect::None),
+        KeyCode::Down | KeyCode::Char('j') => {
+            page.next();
+            (Screen::Settings(page), Effect::None)
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            page.previous();
+            (Screen::Settings(page), Effect::None)
+        }
+        KeyCode::Enter => match page.selected_item() {
+            Some(SettingsItemKind::Language) => {
+                (Screen::Language(LanguagePage::load(language)), Effect::None)
+            }
+            Some(SettingsItemKind::MixedPort) => (
+                Screen::Form(InputForm::mixed_port(paths, language)),
+                Effect::None,
+            ),
+            Some(SettingsItemKind::SwitchMode) => {
+                (Screen::Mode(ModePage::load(paths, language)), Effect::None)
+            }
+            Some(SettingsItemKind::Logs) => (
+                Screen::Logs(TextPage::logs(paths, 200, language)),
+                Effect::None,
+            ),
+            Some(SettingsItemKind::CheckUpdateCore) => check_update_core_confirm(language),
+            None => (Screen::Settings(page), Effect::None),
+        },
+        _ => (Screen::Settings(page), Effect::None),
+    }
+}
+
+fn check_update_core_confirm(language: Language) -> (Screen, Effect) {
+    (
+        Screen::Confirm(ConfirmPage::new(
+            language.tr(Message::CheckUpdateCore),
+            language.tr(Message::CheckUpdateCoreQuestion),
+            language.tr(Message::CheckAction),
+            language.tr(Message::Cancel),
+            CommandRequest::static_args(
+                language.tr(Message::CheckUpdateCore),
+                &["core", "install"],
+            ),
+            language.tr(Message::NoChange),
+        )),
+        Effect::None,
+    )
+}
+
+fn settings_screen_with_message(
+    message: String,
+    language: Language,
+    selected_item: SettingsItemKind,
+) -> Screen {
+    let mut page = SettingsPage::load(language);
+    if let Some(index) = page.items.iter().position(|item| *item == selected_item) {
+        page.selected = index;
+    }
+    page.message = message;
+    Screen::Settings(page)
+}
+
+fn handle_language_key(
+    paths: &StarailPaths,
+    mut page: LanguagePage,
+    key: KeyEvent,
+) -> (Screen, Effect) {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Backspace => (
+            Screen::Settings(SettingsPage::load(page.current)),
             Effect::None,
         ),
+        KeyCode::Down | KeyCode::Char('j') => {
+            page.next();
+            (Screen::Language(page), Effect::None)
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            page.previous();
+            (Screen::Language(page), Effect::None)
+        }
+        KeyCode::Enter => {
+            let selected = page.selected_language();
+            match save_language(paths, selected) {
+                Ok(()) => (
+                    settings_screen_with_message(
+                        selected.tr(Message::LanguageSaved).to_string(),
+                        selected,
+                        SettingsItemKind::Language,
+                    ),
+                    Effect::Refresh,
+                ),
+                Err(error) => {
+                    page.message = format!("{error:#}");
+                    (Screen::Language(page), Effect::None)
+                }
+            }
+        }
+        _ => (Screen::Language(page), Effect::None),
     }
+}
+
+fn save_language(paths: &StarailPaths, language: Language) -> Result<()> {
+    let mut config = AppConfig::load(paths)?;
+    config.language = Some(language.code().to_string());
+    config.save(paths)
 }
 
 fn handle_profiles_key(
     paths: &StarailPaths,
     mut page: ProfilePage,
     key: KeyEvent,
+    language: Language,
 ) -> (Screen, Effect) {
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Backspace => (Screen::Home, Effect::None),
-        KeyCode::Char('r') => (profiles_screen(paths), Effect::None),
+        KeyCode::Char('r') => (profiles_screen(paths, language), Effect::None),
         KeyCode::Down | KeyCode::Char('j') => {
             page.next();
             (Screen::Profiles(page), Effect::None)
@@ -844,66 +1205,76 @@ fn handle_profiles_key(
             page.previous();
             (Screen::Profiles(page), Effect::None)
         }
-        KeyCode::Char('a') => (Screen::Form(InputForm::local_profile()), Effect::None),
-        KeyCode::Char('s') => (Screen::Form(InputForm::subscription()), Effect::None),
+        KeyCode::Char('a') => (
+            Screen::Form(InputForm::local_profile(language)),
+            Effect::None,
+        ),
+        KeyCode::Char('s') => (
+            Screen::Form(InputForm::subscription(language)),
+            Effect::None,
+        ),
         KeyCode::Char('U') => (
             Screen::Profiles(page),
             Effect::Run(CommandRequest::static_args(
-                "Update subscriptions",
+                language.tr(Message::UpdateSubscriptions),
                 &["subscribe", "update"],
             )),
         ),
         KeyCode::Char('u') => {
             let Some(selected) = page.selected_profile() else {
-                page.message = "No profile selected.".to_string();
+                page.message = language.tr(Message::NoProfileSelected).to_string();
                 return (Screen::Profiles(page), Effect::None);
             };
             if selected.kind != profile::ProfileKind::Subscription {
-                page.message =
-                    "Selected profile is local; only subscription profiles can be updated."
-                        .to_string();
+                page.message = language
+                    .tr(Message::LocalProfileUpdateUnsupported)
+                    .to_string();
                 return (Screen::Profiles(page), Effect::None);
             }
             let selected_name = selected.name.clone();
             (
                 Screen::Profiles(page),
                 Effect::Run(CommandRequest::new(
-                    "Update subscription",
+                    language.tr(Message::UpdateSubscription),
                     vec!["subscribe".to_string(), "update".to_string(), selected_name],
                 )),
             )
         }
         KeyCode::Enter => {
             let Some(selected) = page.selected_profile() else {
-                page.message = "No profile selected.".to_string();
+                page.message = language.tr(Message::NoProfileSelected).to_string();
                 return (Screen::Profiles(page), Effect::None);
             };
             let selected_name = selected.name.clone();
             (
                 Screen::Profiles(page),
                 Effect::Run(CommandRequest::new(
-                    "Use profile",
+                    language.tr(Message::UseProfile),
                     vec!["profile".to_string(), "use".to_string(), selected_name],
                 )),
             )
         }
         KeyCode::Char('d') => {
             let Some(selected) = page.selected_profile() else {
-                page.message = "No profile selected.".to_string();
+                page.message = language.tr(Message::NoProfileSelected).to_string();
                 return (Screen::Profiles(page), Effect::None);
             };
             let selected_name = selected.name.clone();
             (
                 Screen::Confirm(ConfirmPage::new(
-                    "Remove profile",
-                    format!("Remove profile '{}'?", selected_name),
-                    "Remove",
-                    "Cancel",
+                    language.tr(Message::RemoveProfile),
+                    format!(
+                        "{} '{}' ?",
+                        language.tr(Message::RemoveProfileQuestion),
+                        selected_name
+                    ),
+                    language.tr(Message::Remove),
+                    language.tr(Message::Cancel),
                     CommandRequest::new(
-                        "Remove profile",
+                        language.tr(Message::RemoveProfile),
                         vec!["profile".to_string(), "remove".to_string(), selected_name],
                     ),
-                    "No change.",
+                    language.tr(Message::NoChange),
                 )),
                 Effect::None,
             )
@@ -912,7 +1283,7 @@ fn handle_profiles_key(
     }
 }
 
-fn handle_form_key(mut form: InputForm, key: KeyEvent) -> (Screen, Effect) {
+fn handle_form_key(paths: &StarailPaths, mut form: InputForm, key: KeyEvent) -> (Screen, Effect) {
     match key.code {
         KeyCode::Esc => (Screen::Home, Effect::None),
         KeyCode::Tab | KeyCode::Down => {
@@ -927,6 +1298,27 @@ fn handle_form_key(mut form: InputForm, key: KeyEvent) -> (Screen, Effect) {
             if form.focus + 1 < form.fields.len() {
                 form.next();
                 return (Screen::Form(form), Effect::None);
+            }
+
+            if form.submit == FormSubmit::SetMixedPort {
+                let value = form.fields[0].value.trim().to_string();
+                return match save_mixed_port(paths, &value) {
+                    Ok(port) => (
+                        settings_screen_with_message(
+                            format!(
+                                "{} ({port})",
+                                app_language(paths).tr(Message::MixedPortSaved)
+                            ),
+                            app_language(paths),
+                            SettingsItemKind::MixedPort,
+                        ),
+                        Effect::Refresh,
+                    ),
+                    Err(error) => {
+                        form.message = format!("{error:#}");
+                        (Screen::Form(form), Effect::None)
+                    }
+                };
             }
 
             match form.submit() {
@@ -950,7 +1342,26 @@ fn handle_form_key(mut form: InputForm, key: KeyEvent) -> (Screen, Effect) {
     }
 }
 
-fn handle_mode_key(mut page: ModePage, key: KeyEvent) -> (Screen, Effect) {
+fn save_mixed_port(paths: &StarailPaths, value: &str) -> Result<u16> {
+    let port = parse_mixed_port(value)?;
+    let mut config = AppConfig::load(paths)?;
+    config.mixed_port = port;
+    config.save(paths)?;
+    Ok(port)
+}
+
+fn parse_mixed_port(value: &str) -> Result<u16> {
+    let port = value
+        .trim()
+        .parse::<u16>()
+        .map_err(|_| anyhow::anyhow!(i18n::detect().tr(Message::PortInvalid)))?;
+    if port == 0 {
+        return Err(anyhow::anyhow!(i18n::detect().tr(Message::PortInvalid)));
+    }
+    Ok(port)
+}
+
+fn handle_mode_key(mut page: ModePage, key: KeyEvent, language: Language) -> (Screen, Effect) {
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Backspace => (Screen::Home, Effect::None),
         KeyCode::Down | KeyCode::Char('j') => {
@@ -966,7 +1377,7 @@ fn handle_mode_key(mut page: ModePage, key: KeyEvent) -> (Screen, Effect) {
             (
                 Screen::Mode(page),
                 Effect::Run(CommandRequest::new(
-                    "Switch mode",
+                    language.tr(Message::SwitchMode),
                     vec!["mode".to_string(), selected_mode],
                 )),
             )
@@ -1011,10 +1422,11 @@ fn handle_proxies_key(
     paths: &StarailPaths,
     mut page: ProxyPage,
     key: KeyEvent,
+    language: Language,
 ) -> (Screen, Effect) {
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Backspace => (Screen::Home, Effect::None),
-        KeyCode::Char('r') => (proxies_screen(paths), Effect::None),
+        KeyCode::Char('r') => (proxies_screen(paths, language), Effect::None),
         KeyCode::Down | KeyCode::Char('j') => {
             page.next();
             (Screen::Proxies(page), Effect::None)
@@ -1025,7 +1437,7 @@ fn handle_proxies_key(
         }
         KeyCode::Enter => {
             let Some(item) = page.selected_item().cloned() else {
-                page.message = "No proxy group selected.".to_string();
+                page.message = language.tr(Message::NoProxyGroupSelected).to_string();
                 return (Screen::Proxies(page), Effect::None);
             };
             let node_results = vec![NodeTestStatus::Untested; item.children.len()];
@@ -1038,7 +1450,7 @@ fn handle_proxies_key(
                     back_items,
                     back_selected,
                     node_results,
-                    message: "Nodes loaded from YAML group order.".to_string(),
+                    message: language.tr(Message::NodesLoadedYamlOrder).to_string(),
                 }),
                 Effect::None,
             )
@@ -1047,7 +1459,11 @@ fn handle_proxies_key(
     }
 }
 
-fn handle_proxy_group_key(mut page: ProxyGroupPage, key: KeyEvent) -> (Screen, Effect) {
+fn handle_proxy_group_key(
+    mut page: ProxyGroupPage,
+    key: KeyEvent,
+    language: Language,
+) -> (Screen, Effect) {
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Backspace => {
             let selected = page
@@ -1057,7 +1473,7 @@ fn handle_proxy_group_key(mut page: ProxyGroupPage, key: KeyEvent) -> (Screen, E
                 Screen::Proxies(ProxyPage {
                     items: page.back_items,
                     selected,
-                    message: "Proxy data loaded.".to_string(),
+                    message: language.tr(Message::ProxyDataLoaded).to_string(),
                 }),
                 Effect::None,
             )
@@ -1072,7 +1488,7 @@ fn handle_proxy_group_key(mut page: ProxyGroupPage, key: KeyEvent) -> (Screen, E
         }
         KeyCode::Char('t') => {
             if page.group.children.is_empty() {
-                page.message = "This group has no nodes to test.".to_string();
+                page.message = language.tr(Message::GroupNoNodesTest).to_string();
                 (Screen::ProxyGroup(page), Effect::None)
             } else {
                 let next = page.clone();
@@ -1081,7 +1497,7 @@ fn handle_proxy_group_key(mut page: ProxyGroupPage, key: KeyEvent) -> (Screen, E
         }
         KeyCode::Enter => {
             let Some(node) = page.selected_node() else {
-                page.message = "No node selected.".to_string();
+                page.message = language.tr(Message::NoNodeSelected).to_string();
                 return (Screen::ProxyGroup(page), Effect::None);
             };
             let group_name = page.group.name.clone();
@@ -1089,7 +1505,7 @@ fn handle_proxy_group_key(mut page: ProxyGroupPage, key: KeyEvent) -> (Screen, E
             (
                 Screen::ProxyGroup(page),
                 Effect::Run(CommandRequest::new(
-                    "Select proxy node",
+                    language.tr(Message::SelectProxyNode),
                     vec![
                         "proxy".to_string(),
                         "select".to_string(),
@@ -1162,6 +1578,7 @@ fn run_command(
         &request.args,
         Duration::ZERO,
         Vec::new(),
+        app.language,
     ));
     terminal.draw(|frame| draw(frame, app))?;
 
@@ -1171,6 +1588,7 @@ fn run_command(
         request.title,
         request.args,
         result,
+        app.language,
     ));
     Ok(())
 }
@@ -1187,6 +1605,7 @@ fn run_child_command(
     let stderr_file = File::create(&stderr_path)?;
     let mut child = Command::new(exe)
         .args(&request.args)
+        .env("STARAIL_LANG", app.language.code())
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file))
@@ -1210,6 +1629,7 @@ fn run_child_command(
             &request.args,
             started.elapsed(),
             command_preview(&stdout_path, &stderr_path),
+            app.language,
         ));
         let _ = terminal.draw(|frame| draw(frame, app));
 
@@ -1246,7 +1666,7 @@ fn test_proxy_group_nodes(
     mut page: ProxyGroupPage,
 ) -> Result<()> {
     if page.group.children.is_empty() {
-        page.message = "This group has no nodes to test.".to_string();
+        page.message = app.language.tr(Message::GroupNoNodesTest).to_string();
         app.screen = Screen::ProxyGroup(page);
         return Ok(());
     }
@@ -1254,9 +1674,11 @@ fn test_proxy_group_nodes(
     let app_config = AppConfig::load(paths)?;
     let total = page.group.children.len();
     page.node_results = vec![NodeTestStatus::Testing; total];
-    page.message = format!(
-        "Testing {total} nodes concurrently with {} timeout={}ms. Press Esc or Ctrl-C to cancel.",
-        app_config.latency_test_url, app_config.latency_test_timeout
+    page.message = proxy_test_start_message(
+        app.language,
+        total,
+        &app_config.latency_test_url,
+        app_config.latency_test_timeout,
     );
     app.screen = Screen::ProxyGroup(page.clone());
     terminal.draw(|frame| draw(frame, app))?;
@@ -1267,9 +1689,10 @@ fn test_proxy_group_nodes(
         let paths = paths.clone();
         let test_url = app_config.latency_test_url.clone();
         let timeout = app_config.latency_test_timeout;
+        let language = app.language;
         thread::spawn(move || {
             let result = controller::delay(&paths, &node, &test_url, timeout)
-                .map(delay_label)
+                .map(|value| delay_label(value, language))
                 .map_err(|error| error.to_string());
             let _ = sender.send(ProxyGroupTestUpdate { index, result });
         });
@@ -1295,7 +1718,7 @@ fn test_proxy_group_nodes(
                         }
                     }
                 }
-                page.message = format!("Testing nodes... {finished}/{total} finished, {ok} ok.");
+                page.message = proxy_test_progress_message(app.language, finished, total, ok);
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -1308,9 +1731,7 @@ fn test_proxy_group_nodes(
             match event::read()? {
                 Event::Key(key) if is_proxy_test_cancel_key(&key) => {
                     clear_testing_statuses(&mut page);
-                    page.message =
-                        "Test cancelled; in-flight node checks may finish in background."
-                            .to_string();
+                    page.message = proxy_test_cancelled_message(app.language);
                     app.screen = Screen::ProxyGroup(page);
                     return Ok(());
                 }
@@ -1321,21 +1742,78 @@ fn test_proxy_group_nodes(
     }
 
     clear_testing_statuses(&mut page);
-    page.message = if ok == 0 {
-        format!("Finished testing {finished}/{total} nodes; all failed.")
-    } else {
-        format!("Finished testing {finished}/{total} nodes; {ok} ok.")
-    };
+    page.message = proxy_test_finished_message(app.language, finished, total, ok);
     app.screen = Screen::ProxyGroup(page);
     Ok(())
 }
 
-fn delay_label(value: Value) -> String {
+fn delay_label(value: Value, language: Language) -> String {
     value
         .get("delay")
         .and_then(Value::as_u64)
         .map(|value| format!("{value}ms"))
-        .unwrap_or_else(|| "ok".to_string())
+        .unwrap_or_else(|| language.tr(Message::OkStatus).to_string())
+}
+
+fn proxy_test_start_message(
+    language: Language,
+    total: usize,
+    test_url: &str,
+    timeout: u64,
+) -> String {
+    match language {
+        Language::English => format!(
+            "Testing {total} nodes concurrently with {test_url} timeout={timeout}ms. Press Esc or Ctrl-C to cancel."
+        ),
+        Language::SimplifiedChinese => format!(
+            "正在并发测试 {total} 个节点，测试地址 {test_url}，超时 {timeout}ms。按 Esc 或 Ctrl-C 取消。"
+        ),
+    }
+}
+
+fn proxy_test_progress_message(
+    language: Language,
+    finished: usize,
+    total: usize,
+    ok: usize,
+) -> String {
+    match language {
+        Language::English => {
+            format!("Testing nodes... {finished}/{total} finished, {ok} ok.")
+        }
+        Language::SimplifiedChinese => {
+            format!("正在测试节点... 已完成 {finished}/{total}，成功 {ok}。")
+        }
+    }
+}
+
+fn proxy_test_cancelled_message(language: Language) -> String {
+    match language {
+        Language::English => {
+            "Test cancelled; in-flight node checks may finish in background.".to_string()
+        }
+        Language::SimplifiedChinese => {
+            "测试已取消；正在进行的节点检查可能会在后台完成。".to_string()
+        }
+    }
+}
+
+fn proxy_test_finished_message(
+    language: Language,
+    finished: usize,
+    total: usize,
+    ok: usize,
+) -> String {
+    match language {
+        Language::English if ok == 0 => {
+            format!("Finished testing {finished}/{total} nodes; all failed.")
+        }
+        Language::English => format!("Finished testing {finished}/{total} nodes; {ok} ok."),
+        Language::SimplifiedChinese if ok == 0 => {
+            format!("测试完成 {finished}/{total}；全部失败。")
+        }
+        Language::SimplifiedChinese => format!("测试完成 {finished}/{total}；成功 {ok}。"),
+    }
 }
 
 fn is_proxy_test_cancel_key(key: &KeyEvent) -> bool {
@@ -1364,15 +1842,22 @@ fn draw(frame: &mut Frame<'_>, app: &App) {
         ])
         .split(frame.size());
 
-    draw_header(frame, chunks[0], app, &screen_title(&app.screen));
+    draw_header(
+        frame,
+        chunks[0],
+        app,
+        &screen_title(&app.screen, app.language),
+    );
     match &app.screen {
         Screen::Home => draw_home(frame, chunks[1], app),
-        Screen::Profiles(page) => draw_profiles(frame, chunks[1], page),
+        Screen::Settings(page) => draw_settings(frame, chunks[1], page, app.language),
+        Screen::Language(page) => draw_language(frame, chunks[1], page, app.language),
+        Screen::Profiles(page) => draw_profiles(frame, chunks[1], page, app.language),
         Screen::Form(form) => draw_form(frame, chunks[1], form),
-        Screen::Mode(page) => draw_mode(frame, chunks[1], page),
+        Screen::Mode(page) => draw_mode(frame, chunks[1], page, app.language),
         Screen::Logs(page) => draw_text_page(frame, chunks[1], page),
-        Screen::Proxies(page) => draw_proxies(frame, chunks[1], page),
-        Screen::ProxyGroup(page) => draw_proxy_group(frame, chunks[1], page),
+        Screen::Proxies(page) => draw_proxies(frame, chunks[1], page, app.language),
+        Screen::ProxyGroup(page) => draw_proxy_group(frame, chunks[1], page, app.language),
         Screen::Output(page) => draw_output(frame, chunks[1], page),
         Screen::Confirm(page) => draw_confirm(frame, chunks[1], page),
     }
@@ -1396,7 +1881,7 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App, title: &str) {
         ),
         Span::raw("  "),
     ];
-    spans.extend(header_status_spans(app.status.as_ref()));
+    spans.extend(header_status_spans(app.status.as_ref(), app.language));
     let line = Line::from(spans);
     frame.render_widget(
         Paragraph::new(line).block(
@@ -1412,12 +1897,12 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let content = footer_content(app);
     frame.render_widget(
         Paragraph::new(vec![
-            footer_message_line(content.message),
+            footer_message_line(content.message, app.language),
             footer_hint_line(&content.hints),
         ])
         .block(
             Block::default()
-                .title("Message / Keys")
+                .title(app.language.tr(Message::MessageKeys))
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::DarkGray)),
         ),
@@ -1436,9 +1921,12 @@ struct FooterContent {
     hints: Vec<FooterHint>,
 }
 
-fn footer_message_line(message: String) -> Line<'static> {
+fn footer_message_line(message: String, language: Language) -> Line<'static> {
     Line::from(vec![
-        Span::styled("Status: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            language.tr(Message::StatusLabel),
+            Style::default().fg(Color::DarkGray),
+        ),
         Span::styled(message, Style::default().fg(Color::White)),
     ])
 }
@@ -1470,60 +1958,81 @@ enum StatusTone {
     Neutral,
 }
 
-fn header_status_spans(snapshot: Option<&status::StatusSnapshot>) -> Vec<Span<'static>> {
+fn header_status_spans(
+    snapshot: Option<&status::StatusSnapshot>,
+    language: Language,
+) -> Vec<Span<'static>> {
     match snapshot {
         Some(status) => vec![
-            Span::styled("process: ", status_label_style()),
             Span::styled(
-                status.process.clone(),
+                format!("{}: ", language.tr(Message::Process).to_lowercase()),
+                status_label_style(),
+            ),
+            Span::styled(
+                status_display_value(&status.process, language),
                 status_value_style(process_tone(&status.process)),
             ),
-            Span::styled(" | active: ", status_label_style()),
             Span::styled(
-                status.active_profile.clone(),
+                format!(" | {}: ", language.tr(Message::Active)),
+                status_label_style(),
+            ),
+            Span::styled(
+                status_display_value(&status.active_profile, language),
                 status_value_style(profile_tone(&status.active_profile)),
             ),
         ],
         None => vec![Span::styled(
-            "status unavailable",
+            language.tr(Message::Unavailable),
             status_value_style(StatusTone::Problem),
         )],
     }
 }
 
-fn home_status_lines(status: &status::StatusSnapshot) -> Vec<Line<'static>> {
+fn home_status_lines(status: &status::StatusSnapshot, language: Language) -> Vec<Line<'static>> {
     vec![
-        status_line("Home", status.home.clone(), StatusTone::Neutral),
-        status_line("Core", status.core.clone(), core_tone(&status.core)),
         status_line(
-            "Core version",
-            status.core_version.clone(),
+            language.tr(Message::Home),
+            status.home.clone(),
+            StatusTone::Neutral,
+        ),
+        status_line(
+            language.tr(Message::Core),
+            status_display_value(&status.core, language),
+            core_tone(&status.core),
+        ),
+        status_line(
+            language.tr(Message::CoreVersion),
+            status_display_value(&status.core_version, language),
             version_tone(&status.core_version),
         ),
         status_line(
-            "Active profile",
-            status.active_profile.clone(),
+            language.tr(Message::ActiveProfile),
+            status_display_value(&status.active_profile, language),
             profile_tone(&status.active_profile),
         ),
         status_line(
-            "Current group/node",
-            status.selected_proxy.clone(),
+            language.tr(Message::CurrentGroupNode),
+            status_display_value(&status.selected_proxy, language),
             selected_proxy_tone(&status.selected_proxy),
         ),
         status_line(
-            "Mixed port",
+            language.tr(Message::MixedPort),
             status.mixed_port.to_string(),
             StatusTone::Normal,
         ),
-        status_line("Controller", status.controller.clone(), StatusTone::Neutral),
         status_line(
-            "Process",
-            status.process.clone(),
+            language.tr(Message::Controller),
+            status.controller.clone(),
+            StatusTone::Neutral,
+        ),
+        status_line(
+            language.tr(Message::Process),
+            status_display_value(&status.process, language),
             process_tone(&status.process),
         ),
         status_line(
-            "Controller state",
-            status.controller_state.clone(),
+            language.tr(Message::ControllerState),
+            status_display_value(&status.controller_state, language),
             controller_tone(&status.controller_state),
         ),
     ]
@@ -1534,6 +2043,48 @@ fn status_line(label: &str, value: String, tone: StatusTone) -> Line<'static> {
         Span::styled(format!("{label}: "), status_label_style()),
         Span::styled(value, status_value_style(tone)),
     ])
+}
+
+fn status_display_value(value: &str, language: Language) -> String {
+    if let Some(pid) = value
+        .strip_prefix("running (pid ")
+        .and_then(|value| value.strip_suffix(')'))
+    {
+        return format!("{} (pid {pid})", language.tr(Message::Running));
+    }
+
+    if let Some(mode) = value
+        .strip_prefix("reachable (mode: ")
+        .and_then(|value| value.strip_suffix(')'))
+    {
+        return format!(
+            "{} ({}: {mode})",
+            language.tr(Message::Reachable),
+            language.tr(Message::Mode)
+        );
+    }
+
+    if let Some((prefix, rest)) = value.rsplit_once(" (+") {
+        if let Some(count) = rest.strip_suffix(" groups)") {
+            return format!(
+                "{} (+{} {})",
+                prefix,
+                count,
+                language.tr(Message::GroupUnit)
+            );
+        }
+    }
+
+    match value {
+        "missing" => language.tr(Message::Missing).to_string(),
+        "unavailable" => language.tr(Message::Unavailable).to_string(),
+        "unknown" => language.tr(Message::Unknown).to_string(),
+        "none" => language.tr(Message::NoneValue).to_string(),
+        "stopped" => language.tr(Message::Stopped).to_string(),
+        "reachable" => language.tr(Message::Reachable).to_string(),
+        "unreachable" => language.tr(Message::Unreachable).to_string(),
+        _ => value.to_string(),
+    }
 }
 
 fn status_label_style() -> Style {
@@ -1609,15 +2160,15 @@ fn draw_home(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .split(area);
 
     let status_lines = match &app.status {
-        Some(status) => home_status_lines(status),
+        Some(status) => home_status_lines(status, app.language),
         None => vec![Line::from(Span::styled(
-            "Status unavailable.",
+            app.language.tr(Message::Unavailable),
             status_value_style(StatusTone::Problem),
         ))],
     };
     let status = Paragraph::new(status_lines)
         .wrap(Wrap { trim: false })
-        .block(page_block("Status"));
+        .block(page_block(app.language.tr(Message::Status)));
     frame.render_widget(status, body[0]);
 
     let right = Layout::default()
@@ -1628,12 +2179,18 @@ fn draw_home(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let items = app
         .actions
         .iter()
-        .map(|action| ListItem::new(format!("{:<24} {}", action.label(), action.detail())))
+        .map(|action| {
+            ListItem::new(format!(
+                "{} {}",
+                pad_display_width(action.label(app.language), 24),
+                action.detail(app.language)
+            ))
+        })
         .collect::<Vec<_>>();
     let mut state = ListState::default();
     state.select(Some(app.selected));
     let actions = List::new(items)
-        .block(page_block("Daily Actions"))
+        .block(page_block(app.language.tr(Message::DailyActions)))
         .highlight_style(
             Style::default()
                 .fg(Color::Black)
@@ -1646,36 +2203,148 @@ fn draw_home(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let selected = app.selected_action();
     let detail = Paragraph::new(vec![
         Line::from(Span::styled(
-            selected.label(),
+            selected.label(app.language),
             Style::default()
                 .fg(Color::LightGreen)
                 .add_modifier(Modifier::BOLD),
         )),
-        Line::from(selected.detail()),
+        Line::from(selected.detail(app.language)),
     ])
     .wrap(Wrap { trim: false })
-    .block(page_block("Selected"));
+    .block(page_block(app.language.tr(Message::Selected)));
     frame.render_widget(detail, right[1]);
 }
 
-fn draw_profiles(frame: &mut Frame<'_>, area: Rect, page: &ProfilePage) {
+fn draw_language(frame: &mut Frame<'_>, area: Rect, page: &LanguagePage, language: Language) {
+    let body = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
+        .split(area);
+
+    let items = page
+        .options
+        .iter()
+        .map(|candidate| {
+            let active = if *candidate == page.current { "*" } else { " " };
+            ListItem::new(format!(
+                "{} {} {}",
+                active,
+                pad_display_width(candidate.display_name(language), 20),
+                candidate.code()
+            ))
+        })
+        .collect::<Vec<_>>();
+    let mut state = ListState::default();
+    if !page.options.is_empty() {
+        state.select(Some(page.selected));
+    }
+    let list = List::new(items)
+        .block(page_block(language.tr(Message::Language)))
+        .highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+    frame.render_stateful_widget(list, body[0], &mut state);
+
+    let selected = page.selected_language();
+    let detail = Paragraph::new(vec![
+        setting_detail_line(
+            language.tr(Message::Current),
+            page.current.display_name(language).to_string(),
+        ),
+        setting_detail_line(
+            language.tr(Message::Selected),
+            selected.display_name(language).to_string(),
+        ),
+        setting_detail_line(language.tr(Message::Code), selected.code().to_string()),
+        Line::from(language.tr(Message::LanguageDetail)),
+    ])
+    .wrap(Wrap { trim: false })
+    .block(page_block(language.tr(Message::Details)));
+    frame.render_widget(detail, body[1]);
+}
+
+fn draw_settings(frame: &mut Frame<'_>, area: Rect, page: &SettingsPage, language: Language) {
+    let body = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(48), Constraint::Percentage(52)])
+        .split(area);
+
+    let items = page
+        .items
+        .iter()
+        .map(|item| {
+            ListItem::new(format!(
+                "{} {}",
+                pad_display_width(item.label(language), 24),
+                item.summary(language)
+            ))
+        })
+        .collect::<Vec<_>>();
+    let mut state = ListState::default();
+    if !page.items.is_empty() {
+        state.select(Some(page.selected));
+    }
+    let list = List::new(items)
+        .block(page_block(language.tr(Message::Settings)))
+        .highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+    frame.render_stateful_widget(list, body[0], &mut state);
+
+    let detail_lines = page
+        .selected_item()
+        .map(|item| item.detail_lines(language))
+        .unwrap_or_else(|| vec![Line::from(language.tr(Message::SettingsNoItems))]);
+    let detail = Paragraph::new(detail_lines)
+        .wrap(Wrap { trim: false })
+        .block(page_block(language.tr(Message::Details)));
+    frame.render_widget(detail, body[1]);
+}
+
+fn setting_detail_line(label: &'static str, value: String) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{label}: "), Style::default().fg(Color::Gray)),
+        Span::raw(value),
+    ])
+}
+
+fn label_prefix(label: &'static str) -> String {
+    format!("{label}: ")
+}
+
+fn profile_kind_label(kind: profile::ProfileKind, language: Language) -> &'static str {
+    match kind {
+        profile::ProfileKind::Local => language.tr(Message::Local),
+        profile::ProfileKind::Subscription => language.tr(Message::Subscription),
+    }
+}
+
+fn draw_profiles(frame: &mut Frame<'_>, area: Rect, page: &ProfilePage, language: Language) {
     let body = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(56), Constraint::Percentage(44)])
         .split(area);
 
     let items = if page.profiles.is_empty() {
-        vec![ListItem::new("No profiles yet.")]
+        vec![ListItem::new(language.tr(Message::NoProfilesYet))]
     } else {
         page.profiles
             .iter()
             .map(|profile| {
                 let active = if profile.active { "*" } else { " " };
                 ListItem::new(format!(
-                    "{} {:<30} {:<12}",
+                    "{} {} {}",
                     active,
-                    profile.name,
-                    profile.kind.as_str()
+                    pad_display_width(&profile.name, 30),
+                    pad_display_width(profile_kind_label(profile.kind, language), 12)
                 ))
             })
             .collect::<Vec<_>>()
@@ -1685,7 +2354,7 @@ fn draw_profiles(frame: &mut Frame<'_>, area: Rect, page: &ProfilePage) {
         state.select(Some(page.selected));
     }
     let list = List::new(items)
-        .block(page_block("Profiles"))
+        .block(page_block(language.tr(Message::Profiles)))
         .highlight_style(
             Style::default()
                 .fg(Color::Black)
@@ -1698,30 +2367,46 @@ fn draw_profiles(frame: &mut Frame<'_>, area: Rect, page: &ProfilePage) {
     let detail_lines = match page.selected_profile() {
         Some(profile) => vec![
             Line::from(vec![
-                Span::styled("Name: ", Style::default().fg(Color::Gray)),
+                Span::styled(
+                    label_prefix(language.tr(Message::Name)),
+                    Style::default().fg(Color::Gray),
+                ),
                 Span::raw(profile.name.clone()),
             ]),
             Line::from(vec![
-                Span::styled("Type: ", Style::default().fg(Color::Gray)),
-                Span::raw(profile.kind.as_str()),
+                Span::styled(
+                    label_prefix(language.tr(Message::Type)),
+                    Style::default().fg(Color::Gray),
+                ),
+                Span::raw(profile_kind_label(profile.kind, language).to_string()),
             ]),
             Line::from(vec![
-                Span::styled("Active: ", Style::default().fg(Color::Gray)),
-                Span::raw(if profile.active { "yes" } else { "no" }),
+                Span::styled(
+                    label_prefix(language.tr(Message::Active)),
+                    Style::default().fg(Color::Gray),
+                ),
+                Span::raw(if profile.active {
+                    language.tr(Message::Yes)
+                } else {
+                    language.tr(Message::No)
+                }),
             ]),
             Line::from(vec![
-                Span::styled("Source: ", Style::default().fg(Color::Gray)),
+                Span::styled(
+                    label_prefix(language.tr(Message::Source)),
+                    Style::default().fg(Color::Gray),
+                ),
                 Span::raw(profile.source_url.as_deref().unwrap_or("-").to_string()),
             ]),
         ],
         None => vec![
-            Line::from("Add a local config profile or a subscription-backed profile."),
-            Line::from("Profiles are stored under ~/.starail/profiles."),
+            Line::from(language.tr(Message::ProfileEmptyHint)),
+            Line::from(language.tr(Message::ProfileStorageHint)),
         ],
     };
     let detail = Paragraph::new(detail_lines)
         .wrap(Wrap { trim: false })
-        .block(page_block("Details"));
+        .block(page_block(language.tr(Message::Details)));
     frame.render_widget(detail, body[1]);
 }
 
@@ -1773,7 +2458,7 @@ fn draw_form(frame: &mut Frame<'_>, area: Rect, form: &InputForm) {
     }
 }
 
-fn draw_mode(frame: &mut Frame<'_>, area: Rect, page: &ModePage) {
+fn draw_mode(frame: &mut Frame<'_>, area: Rect, page: &ModePage, language: Language) {
     let body = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
@@ -1793,7 +2478,7 @@ fn draw_mode(frame: &mut Frame<'_>, area: Rect, page: &ModePage) {
     let mut state = ListState::default();
     state.select(Some(page.selected));
     let list = List::new(items)
-        .block(page_block("Mode"))
+        .block(page_block(language.tr(Message::Mode)))
         .highlight_style(
             Style::default()
                 .fg(Color::Black)
@@ -1805,17 +2490,26 @@ fn draw_mode(frame: &mut Frame<'_>, area: Rect, page: &ModePage) {
 
     let detail = Paragraph::new(vec![
         Line::from(vec![
-            Span::styled("Current: ", Style::default().fg(Color::Gray)),
-            Span::raw(page.current.as_deref().unwrap_or("unknown").to_string()),
+            Span::styled(
+                label_prefix(language.tr(Message::Current)),
+                Style::default().fg(Color::Gray),
+            ),
+            Span::raw(match page.current.as_deref() {
+                Some(mode) => mode.to_string(),
+                None => language.tr(Message::Unknown).to_string(),
+            }),
         ]),
         Line::from(vec![
-            Span::styled("Selected: ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                label_prefix(language.tr(Message::Selected)),
+                Style::default().fg(Color::Gray),
+            ),
             Span::raw(page.selected_mode()),
         ]),
         Line::from(page.message.clone()),
     ])
     .wrap(Wrap { trim: false })
-    .block(page_block("Controller"));
+    .block(page_block(language.tr(Message::Controller)));
     frame.render_widget(detail, body[1]);
 }
 
@@ -1828,17 +2522,17 @@ fn draw_text_page(frame: &mut Frame<'_>, area: Rect, page: &TextPage) {
     frame.render_widget(paragraph, area);
 }
 
-fn draw_proxies(frame: &mut Frame<'_>, area: Rect, page: &ProxyPage) {
+fn draw_proxies(frame: &mut Frame<'_>, area: Rect, page: &ProxyPage, language: Language) {
     let body = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
         .split(area);
     let items = if page.items.is_empty() {
-        vec![ListItem::new("No proxy groups found in active profile.")]
+        vec![ListItem::new(language.tr(Message::NoProxyGroupsFound))]
     } else {
         page.items
             .iter()
-            .map(|item| ListItem::new(item.label()))
+            .map(|item| ListItem::new(item.label(language)))
             .collect::<Vec<_>>()
     };
     let mut state = ListState::default();
@@ -1846,7 +2540,7 @@ fn draw_proxies(frame: &mut Frame<'_>, area: Rect, page: &ProxyPage) {
         state.select(Some(page.selected));
     }
     let list = List::new(items)
-        .block(page_block("Proxy Groups"))
+        .block(page_block(language.tr(Message::ProxyGroups)))
         .highlight_style(
             Style::default()
                 .fg(Color::Black)
@@ -1857,18 +2551,18 @@ fn draw_proxies(frame: &mut Frame<'_>, area: Rect, page: &ProxyPage) {
     frame.render_stateful_widget(list, body[0], &mut state);
 
     let lines = match page.selected_item() {
-        Some(item) => proxy_detail_lines(item),
+        Some(item) => proxy_detail_lines(item, language),
         None => vec![Line::from(
-            "Select an active profile whose YAML contains proxy-groups.",
+            language.tr(Message::SelectActiveProfileWithProxyGroups),
         )],
     };
     let detail = Paragraph::new(lines)
         .wrap(Wrap { trim: false })
-        .block(page_block("Details"));
+        .block(page_block(language.tr(Message::Details)));
     frame.render_widget(detail, body[1]);
 }
 
-fn draw_proxy_group(frame: &mut Frame<'_>, area: Rect, page: &ProxyGroupPage) {
+fn draw_proxy_group(frame: &mut Frame<'_>, area: Rect, page: &ProxyGroupPage, language: Language) {
     let body = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
@@ -1878,13 +2572,13 @@ fn draw_proxy_group(frame: &mut Frame<'_>, area: Rect, page: &ProxyGroupPage) {
         .children
         .iter()
         .enumerate()
-        .map(|(index, node)| ListItem::new(page.node_label(index, node)))
+        .map(|(index, node)| ListItem::new(page.node_label(index, node, language)))
         .collect::<Vec<_>>();
     let mut state = ListState::default();
     if !page.group.children.is_empty() {
         state.select(Some(page.selected));
     }
-    let group_title = format!("Group: {}", page.group.name);
+    let group_title = format!("{}: {}", language.tr(Message::Group), page.group.name);
     let list = List::new(items)
         .block(page_block(&group_title))
         .highlight_style(
@@ -1898,21 +2592,30 @@ fn draw_proxy_group(frame: &mut Frame<'_>, area: Rect, page: &ProxyGroupPage) {
 
     let detail = Paragraph::new(vec![
         Line::from(vec![
-            Span::styled("Type: ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                label_prefix(language.tr(Message::Type)),
+                Style::default().fg(Color::Gray),
+            ),
             Span::raw(empty_as_dash(&page.group.kind)),
         ]),
         Line::from(vec![
-            Span::styled("Selected: ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                label_prefix(language.tr(Message::Selected)),
+                Style::default().fg(Color::Gray),
+            ),
             Span::raw(page.selected_node().unwrap_or("-").to_string()),
         ]),
         Line::from(vec![
-            Span::styled("Result: ", Style::default().fg(Color::Gray)),
-            Span::raw(page.selected_status()),
+            Span::styled(
+                label_prefix(language.tr(Message::Result)),
+                Style::default().fg(Color::Gray),
+            ),
+            Span::raw(page.selected_status(language)),
         ]),
         Line::from(page.message.clone()),
     ])
     .wrap(Wrap { trim: false })
-    .block(page_block("Selection"));
+    .block(page_block(language.tr(Message::Selection)));
     frame.render_widget(detail, body[1]);
 }
 
@@ -1997,19 +2700,24 @@ fn draw_button(frame: &mut Frame<'_>, area: Rect, label: &str, selected: bool, c
     frame.render_widget(button, area);
 }
 
-fn profiles_screen(paths: &StarailPaths) -> Screen {
-    match ProfilePage::load(paths) {
+fn profiles_screen(paths: &StarailPaths, language: Language) -> Screen {
+    match ProfilePage::load(paths, language) {
         Ok(page) => Screen::Profiles(page),
-        Err(error) => Screen::Output(OutputPage::error("Profiles", format!("{error:#}"))),
+        Err(error) => Screen::Output(OutputPage::error(
+            language.tr(Message::Profiles),
+            format!("{error:#}"),
+            language,
+        )),
     }
 }
 
-fn proxies_screen(paths: &StarailPaths) -> Screen {
-    match ProxyPage::load(paths) {
+fn proxies_screen(paths: &StarailPaths, language: Language) -> Screen {
+    match ProxyPage::load(paths, language) {
         Ok(page) => Screen::Proxies(page),
         Err(error) => Screen::Output(OutputPage::error(
-            "Proxy groups and nodes",
+            language.tr(Message::ProxyGroupsAndNodes),
             format!("{error:#}"),
+            language,
         )),
     }
 }
@@ -2055,27 +2763,102 @@ fn yaml_string_field(value: &serde_yaml::Value, key: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn proxy_detail_lines(item: &ProxyItem) -> Vec<Line<'static>> {
+fn proxy_detail_lines(item: &ProxyItem, language: Language) -> Vec<Line<'static>> {
     vec![
         Line::from(vec![
-            Span::styled("Group: ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                label_prefix(language.tr(Message::Group)),
+                Style::default().fg(Color::Gray),
+            ),
             Span::raw(item.name.clone()),
         ]),
         Line::from(vec![
-            Span::styled("Type: ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                label_prefix(language.tr(Message::Type)),
+                Style::default().fg(Color::Gray),
+            ),
             Span::raw(empty_as_dash(&item.kind)),
         ]),
         Line::from(vec![
-            Span::styled("Nodes: ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                label_prefix(language.tr(Message::Nodes)),
+                Style::default().fg(Color::Gray),
+            ),
             Span::raw(item.children.len().to_string()),
         ]),
-        Line::from("Press Enter to view the group's YAML node list."),
+        Line::from(language.tr(Message::PressEnterViewGroupNodeList)),
     ]
 }
 
 #[cfg(test)]
 mod tui_tests {
     use super::*;
+
+    #[test]
+    fn settings_page_groups_language_display_mode_logs_and_core() {
+        let page = SettingsPage::load(Language::English);
+
+        assert_eq!(
+            page.items,
+            [
+                SettingsItemKind::Language,
+                SettingsItemKind::MixedPort,
+                SettingsItemKind::SwitchMode,
+                SettingsItemKind::Logs,
+                SettingsItemKind::CheckUpdateCore,
+            ]
+        );
+        assert_eq!(page.items[0].label(Language::English), "Language");
+        assert_eq!(page.items[1].label(Language::English), "Custom port");
+        assert_eq!(page.items[2].label(Language::English), "Switch mode");
+        assert_eq!(page.items[3].label(Language::English), "Logs");
+        assert_eq!(page.items[4].label(Language::English), "Check/update core");
+    }
+
+    #[test]
+    fn parses_mixed_port_values() {
+        assert_eq!(parse_mixed_port("7891").expect("port should parse"), 7891);
+        assert!(parse_mixed_port("0").is_err());
+        assert!(parse_mixed_port("65536").is_err());
+        assert!(parse_mixed_port("abc").is_err());
+    }
+
+    #[test]
+    fn pads_cjk_text_by_display_width() {
+        let padded = pad_display_width("设置", 8);
+
+        assert_eq!(UnicodeWidthStr::width("设置"), 4);
+        assert_eq!(UnicodeWidthStr::width(padded.as_str()), 8);
+        assert_eq!(padded, "设置    ");
+    }
+
+    #[test]
+    fn truncates_cjk_text_by_display_width() {
+        let truncated = truncate_for_column("节点节点节点", 7);
+
+        assert_eq!(UnicodeWidthStr::width(truncated.as_str()), 7);
+        assert_eq!(truncated, "节点...");
+    }
+
+    #[test]
+    fn translates_status_values_for_cjk_ui() {
+        let language = Language::SimplifiedChinese;
+
+        assert_eq!(status_display_value("missing", language), "缺失");
+        assert_eq!(status_display_value("none", language), "无");
+        assert_eq!(
+            status_display_value("running (pid 42)", language),
+            "运行中 (pid 42)"
+        );
+        assert_eq!(
+            status_display_value("reachable (mode: rule)", language),
+            "可连接 (模式: rule)"
+        );
+        assert_eq!(
+            status_display_value("Proxy -> Node (+2 groups)", language),
+            "Proxy -> Node (+2 组)"
+        );
+    }
 
     #[test]
     fn proxy_groups_follow_yaml_order() {
@@ -2107,14 +2890,14 @@ proxies:
     }
 }
 
-fn running_hint(args: &[String]) -> Vec<String> {
+fn running_hint(args: &[String], language: Language) -> Vec<String> {
     if args.len() >= 2 && args[0] == "subscribe" && args[1] == "add" {
         vec![
-            "This step fetches the subscription, saves a temp config, then validates it with mihomo.".to_string(),
-            "The HTTP subscription fetch has a 60s timeout; validation depends on the mihomo core.".to_string(),
+            language.tr(Message::SubscriptionRunHintFetch).to_string(),
+            language.tr(Message::SubscriptionRunHintTimeout).to_string(),
         ]
     } else if args.len() >= 2 && args[0] == "core" && args[1] == "install" {
-        vec!["This step checks the latest mihomo release, compares versions, then downloads if needed.".to_string()]
+        vec![language.tr(Message::CoreInstallRunHint).to_string()]
     } else {
         Vec::new()
     }
@@ -2168,11 +2951,16 @@ fn cleanup_capture_files(stdout_path: &Path, stderr_path: &Path) {
     let _ = fs::remove_file(stderr_path);
 }
 
-fn command_output_lines(args: &[String], output: &std::process::Output) -> Vec<String> {
+fn command_output_lines(
+    args: &[String],
+    output: &std::process::Output,
+    language: Language,
+) -> Vec<String> {
     let mut lines = Vec::new();
     if !output.status.success() {
         lines.push(format!(
-            "Command failed: starail {} ({})",
+            "{} starail {} ({})",
+            language.tr(Message::CommandFailedLine),
             args.join(" "),
             output.status
         ));
@@ -2220,15 +3008,17 @@ fn page_block(title: &str) -> Block<'_> {
         .border_style(Style::default().fg(Color::DarkGray))
 }
 
-fn screen_title(screen: &Screen) -> String {
+fn screen_title(screen: &Screen, language: Language) -> String {
     match screen {
-        Screen::Home => "Dashboard".to_string(),
-        Screen::Profiles(_) => "Profiles".to_string(),
+        Screen::Home => language.tr(Message::Dashboard).to_string(),
+        Screen::Settings(_) => language.tr(Message::Settings).to_string(),
+        Screen::Language(_) => language.tr(Message::Language).to_string(),
+        Screen::Profiles(_) => language.tr(Message::Profiles).to_string(),
         Screen::Form(form) => form.title.clone(),
-        Screen::Mode(_) => "Mode".to_string(),
-        Screen::Logs(_) => "Logs".to_string(),
-        Screen::Proxies(_) => "Proxies".to_string(),
-        Screen::ProxyGroup(page) => format!("Proxy group: {}", page.group.name),
+        Screen::Mode(_) => language.tr(Message::SwitchMode).to_string(),
+        Screen::Logs(_) => language.tr(Message::Logs).to_string(),
+        Screen::Proxies(_) => language.tr(Message::ProxyGroupsAndNodes).to_string(),
+        Screen::ProxyGroup(page) => format!("{}: {}", language.tr(Message::Group), page.group.name),
         Screen::Output(page) => page.title.clone(),
         Screen::Confirm(page) => page.title.clone(),
     }
@@ -2241,19 +3031,53 @@ fn footer_content(app: &App) -> FooterContent {
             hints: vec![
                 FooterHint {
                     key: "j/k",
-                    label: "move",
+                    label: app.language.tr(Message::Move),
                 },
                 FooterHint {
                     key: "Enter",
-                    label: "open",
+                    label: app.language.tr(Message::Open),
                 },
                 FooterHint {
                     key: "r",
-                    label: "refresh",
+                    label: app.language.tr(Message::Refresh),
                 },
                 FooterHint {
                     key: "q",
-                    label: "quit",
+                    label: app.language.tr(Message::Quit),
+                },
+            ],
+        },
+        Screen::Settings(page) => FooterContent {
+            message: page.message.clone(),
+            hints: vec![
+                FooterHint {
+                    key: "j/k",
+                    label: app.language.tr(Message::Move),
+                },
+                FooterHint {
+                    key: "Enter",
+                    label: app.language.tr(Message::Select),
+                },
+                FooterHint {
+                    key: "Esc",
+                    label: app.language.tr(Message::Back),
+                },
+            ],
+        },
+        Screen::Language(page) => FooterContent {
+            message: page.message.clone(),
+            hints: vec![
+                FooterHint {
+                    key: "j/k",
+                    label: app.language.tr(Message::Move),
+                },
+                FooterHint {
+                    key: "Enter",
+                    label: app.language.tr(Message::Apply),
+                },
+                FooterHint {
+                    key: "Esc",
+                    label: app.language.tr(Message::Back),
                 },
             ],
         },
@@ -2262,39 +3086,39 @@ fn footer_content(app: &App) -> FooterContent {
             hints: vec![
                 FooterHint {
                     key: "j/k",
-                    label: "move",
+                    label: app.language.tr(Message::Move),
                 },
                 FooterHint {
                     key: "Enter",
-                    label: "use",
+                    label: app.language.tr(Message::Use),
                 },
                 FooterHint {
                     key: "a",
-                    label: "local",
+                    label: app.language.tr(Message::Local),
                 },
                 FooterHint {
                     key: "s",
-                    label: "subscription",
+                    label: app.language.tr(Message::Subscription),
                 },
                 FooterHint {
                     key: "u",
-                    label: "update",
+                    label: app.language.tr(Message::Update),
                 },
                 FooterHint {
                     key: "U",
-                    label: "update all",
+                    label: app.language.tr(Message::UpdateAll),
                 },
                 FooterHint {
                     key: "d",
-                    label: "remove",
+                    label: app.language.tr(Message::Remove),
                 },
                 FooterHint {
                     key: "r",
-                    label: "refresh",
+                    label: app.language.tr(Message::Refresh),
                 },
                 FooterHint {
                     key: "Esc",
-                    label: "back",
+                    label: app.language.tr(Message::Back),
                 },
             ],
         },
@@ -2303,15 +3127,15 @@ fn footer_content(app: &App) -> FooterContent {
             hints: vec![
                 FooterHint {
                     key: "Tab",
-                    label: "field",
+                    label: app.language.tr(Message::Field),
                 },
                 FooterHint {
                     key: "Enter",
-                    label: "next/submit",
+                    label: app.language.tr(Message::NextSubmit),
                 },
                 FooterHint {
                     key: "Esc",
-                    label: "cancel",
+                    label: app.language.tr(Message::Cancel),
                 },
             ],
         },
@@ -2320,15 +3144,15 @@ fn footer_content(app: &App) -> FooterContent {
             hints: vec![
                 FooterHint {
                     key: "j/k",
-                    label: "move",
+                    label: app.language.tr(Message::Move),
                 },
                 FooterHint {
                     key: "Enter",
-                    label: "apply",
+                    label: app.language.tr(Message::Apply),
                 },
                 FooterHint {
                     key: "Esc",
-                    label: "back",
+                    label: app.language.tr(Message::Back),
                 },
             ],
         },
@@ -2337,19 +3161,19 @@ fn footer_content(app: &App) -> FooterContent {
             hints: vec![
                 FooterHint {
                     key: "j/k",
-                    label: "scroll",
+                    label: app.language.tr(Message::Scroll),
                 },
                 FooterHint {
                     key: "PgUp/PgDn",
-                    label: "fast",
+                    label: app.language.tr(Message::Fast),
                 },
                 FooterHint {
                     key: "r",
-                    label: "refresh",
+                    label: app.language.tr(Message::Refresh),
                 },
                 FooterHint {
                     key: "Esc",
-                    label: "back",
+                    label: app.language.tr(Message::Back),
                 },
             ],
         },
@@ -2358,19 +3182,19 @@ fn footer_content(app: &App) -> FooterContent {
             hints: vec![
                 FooterHint {
                     key: "j/k",
-                    label: "move",
+                    label: app.language.tr(Message::Move),
                 },
                 FooterHint {
                     key: "Enter",
-                    label: "open group",
+                    label: app.language.tr(Message::OpenGroup),
                 },
                 FooterHint {
                     key: "r",
-                    label: "refresh",
+                    label: app.language.tr(Message::Refresh),
                 },
                 FooterHint {
                     key: "Esc",
-                    label: "back",
+                    label: app.language.tr(Message::Back),
                 },
             ],
         },
@@ -2379,11 +3203,11 @@ fn footer_content(app: &App) -> FooterContent {
             hints: vec![
                 FooterHint {
                     key: "Esc",
-                    label: "cancel",
+                    label: app.language.tr(Message::Cancel),
                 },
                 FooterHint {
                     key: "Ctrl-C",
-                    label: "cancel",
+                    label: app.language.tr(Message::Cancel),
                 },
             ],
         },
@@ -2392,19 +3216,19 @@ fn footer_content(app: &App) -> FooterContent {
             hints: vec![
                 FooterHint {
                     key: "j/k",
-                    label: "move",
+                    label: app.language.tr(Message::Move),
                 },
                 FooterHint {
                     key: "Enter",
-                    label: "select node",
+                    label: app.language.tr(Message::SelectNode),
                 },
                 FooterHint {
                     key: "t",
-                    label: "test group",
+                    label: app.language.tr(Message::TestGroup),
                 },
                 FooterHint {
                     key: "Esc",
-                    label: "back",
+                    label: app.language.tr(Message::Back),
                 },
             ],
         },
@@ -2413,36 +3237,36 @@ fn footer_content(app: &App) -> FooterContent {
             hints: vec![
                 FooterHint {
                     key: "j/k",
-                    label: "scroll",
+                    label: app.language.tr(Message::Scroll),
                 },
                 FooterHint {
                     key: "PgUp/PgDn",
-                    label: "fast",
+                    label: app.language.tr(Message::Fast),
                 },
                 FooterHint {
                     key: "Enter",
-                    label: "back",
+                    label: app.language.tr(Message::Back),
                 },
                 FooterHint {
                     key: "Esc",
-                    label: "back",
+                    label: app.language.tr(Message::Back),
                 },
             ],
         },
         Screen::Confirm(_) => FooterContent {
-            message: "Choose an answer.".to_string(),
+            message: app.language.tr(Message::Choose).to_string(),
             hints: vec![
                 FooterHint {
                     key: "Left/Right",
-                    label: "choose",
+                    label: app.language.tr(Message::Choose),
                 },
                 FooterHint {
                     key: "Enter",
-                    label: "confirm",
+                    label: app.language.tr(Message::ConfirmAction),
                 },
                 FooterHint {
                     key: "Esc",
-                    label: "cancel",
+                    label: app.language.tr(Message::Cancel),
                 },
             ],
         },
@@ -2474,16 +3298,48 @@ fn scroll_u16(value: usize) -> u16 {
     value.min(u16::MAX as usize) as u16
 }
 
+fn pad_display_width(value: &str, width: usize) -> String {
+    let display_width = UnicodeWidthStr::width(value);
+    if display_width >= width {
+        value.to_string()
+    } else {
+        format!("{}{}", value, " ".repeat(width - display_width))
+    }
+}
+
+fn pad_left_display_width(value: &str, width: usize) -> String {
+    let display_width = UnicodeWidthStr::width(value);
+    if display_width >= width {
+        value.to_string()
+    } else {
+        format!("{}{}", " ".repeat(width - display_width), value)
+    }
+}
+
+fn take_display_width(value: &str, width: usize) -> String {
+    let mut output = String::new();
+    let mut used = 0usize;
+    for character in value.chars() {
+        let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
+        if used + character_width > width {
+            break;
+        }
+        output.push(character);
+        used += character_width;
+    }
+    output
+}
+
 fn truncate_for_column(value: &str, width: usize) -> String {
-    if value.chars().count() <= width {
+    if UnicodeWidthStr::width(value) <= width {
         return value.to_string();
     }
 
     if width <= 3 {
-        return value.chars().take(width).collect();
+        return take_display_width(value, width);
     }
 
-    let mut output = value.chars().take(width - 3).collect::<String>();
+    let mut output = take_display_width(value, width - 3);
     output.push_str("...");
     output
 }
