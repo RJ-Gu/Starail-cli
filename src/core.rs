@@ -10,6 +10,8 @@ use anyhow::{bail, Context, Result};
 use flate2::read::GzDecoder;
 use serde::Deserialize;
 
+use crate::config::app_language;
+use crate::i18n::{Language, Message};
 use crate::paths::{display_path, StarailPaths};
 use crate::platform;
 
@@ -36,35 +38,49 @@ struct ReleaseAsset {
 pub fn install(paths: &StarailPaths) -> Result<()> {
     platform::require_linux()?;
     paths.init()?;
+    let language = app_language(paths);
 
-    let asset = latest_core_asset()?;
+    let asset = latest_core_asset(language)?;
     match managed_core_version(paths) {
         Some(current) => {
-            println!("Installed mihomo core: {current}");
-            println!("Latest mihomo release: {}", asset.release_version);
+            println!(
+                "{} {current}",
+                language.tr(Message::InstalledMihomoCoreLabel)
+            );
+            println!(
+                "{} {}",
+                language.tr(Message::LatestMihomoReleaseLabel),
+                asset.release_version
+            );
             if versions_match(&current, &asset.release_version) {
-                println!("mihomo core is already up to date.");
+                println!("{}", language.tr(Message::MihomoCoreUpToDate));
                 return Ok(());
             }
             println!(
-                "Updating mihomo core from {current} to {}.",
+                "{}: {current} -> {}.",
+                language.tr(Message::UpdatingMihomoCore),
                 asset.release_version
             );
         }
         None => {
             println!(
-                "Managed mihomo core is missing; installing {}.",
+                "{} {}.",
+                language.tr(Message::ManagedCoreMissingInstalling),
                 asset.release_version
             );
         }
     }
 
-    download_and_install_core(paths, &asset.url)?;
+    download_and_install_core(paths, &asset.url, language)?;
     version(paths)
 }
 
-fn download_and_install_core(paths: &StarailPaths, asset_url: &str) -> Result<()> {
-    println!("Downloading {asset_url}");
+fn download_and_install_core(
+    paths: &StarailPaths,
+    asset_url: &str,
+    language: Language,
+) -> Result<()> {
+    println!("{} {asset_url}", language.tr(Message::Downloading));
 
     let client = reqwest::blocking::Client::builder()
         .user_agent(USER_AGENT)
@@ -106,7 +122,11 @@ fn download_and_install_core(paths: &StarailPaths, asset_url: &str) -> Result<()
 
     fs::rename(&candidate, &paths.core_file)
         .with_context(|| format!("failed to install core at {}", paths.core_file.display()))?;
-    println!("Installed mihomo core at {}", paths.core_file.display());
+    println!(
+        "{} {}",
+        language.tr(Message::InstalledMihomoCoreAt),
+        paths.core_file.display()
+    );
     Ok(())
 }
 
@@ -177,9 +197,9 @@ pub fn find_core(paths: &StarailPaths) -> Option<PathBuf> {
     find_in_path("mihomo")
 }
 
-fn latest_core_asset() -> Result<CoreAsset> {
+fn latest_core_asset(language: Language) -> Result<CoreAsset> {
     let api = format!("https://api.github.com/repos/{MIHOMO_REPO}/releases/latest");
-    println!("Fetching latest mihomo release metadata...");
+    println!("{}", language.tr(Message::FetchingLatestMihomoRelease));
 
     let client = reqwest::blocking::Client::builder()
         .user_agent(USER_AGENT)

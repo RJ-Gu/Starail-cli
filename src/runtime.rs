@@ -7,8 +7,9 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 
-use crate::config::AppConfig;
+use crate::config::{app_language, AppConfig};
 use crate::core;
+use crate::i18n::Message;
 use crate::paths::StarailPaths;
 use crate::platform;
 use crate::util::{json_string, unix_timestamp};
@@ -16,6 +17,7 @@ use crate::util::{json_string, unix_timestamp};
 pub fn start(paths: &StarailPaths, config: Option<&Path>) -> Result<()> {
     platform::require_linux()?;
     paths.init()?;
+    let language = app_language(paths);
 
     if is_running(paths) {
         bail!(
@@ -82,18 +84,27 @@ pub fn start(paths: &StarailPaths, config: Option<&Path>) -> Result<()> {
         bail!("mihomo exited during startup. Recent logs:\n{recent_logs}");
     }
 
-    println!("mihomo started with pid {pid}");
-    println!("runtime config: {}", runtime.display());
-    println!("log file: {}", paths.log_file.display());
+    println!("{} {pid}", language.tr(Message::MihomoStartedWithPid));
+    println!(
+        "{} {}",
+        language.tr(Message::RuntimeConfigLabel),
+        runtime.display()
+    );
+    println!(
+        "{} {}",
+        language.tr(Message::LogFileLabel),
+        paths.log_file.display()
+    );
     Ok(())
 }
 
 pub fn stop(paths: &StarailPaths) -> Result<()> {
     paths.init()?;
+    let language = app_language(paths);
 
     if !is_running(paths) {
         let _ = fs::remove_file(&paths.pid_file);
-        println!("mihomo is not running.");
+        println!("{}", language.tr(Message::MihomoNotRunning));
         return Ok(());
     }
 
@@ -103,7 +114,7 @@ pub fn stop(paths: &StarailPaths) -> Result<()> {
     for _ in 0..10 {
         if !process_exists(pid) {
             let _ = fs::remove_file(&paths.pid_file);
-            println!("mihomo stopped.");
+            println!("{}", language.tr(Message::MihomoStopped));
             return Ok(());
         }
         thread::sleep(Duration::from_millis(300));
@@ -111,7 +122,7 @@ pub fn stop(paths: &StarailPaths) -> Result<()> {
 
     send_signal(pid, libc::SIGKILL)?;
     let _ = fs::remove_file(&paths.pid_file);
-    println!("mihomo was still running, sent SIGKILL.");
+    println!("{}", language.tr(Message::MihomoKilledAfterTerm));
     Ok(())
 }
 

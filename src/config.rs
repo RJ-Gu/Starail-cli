@@ -3,6 +3,7 @@ use std::fs;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::i18n::{self, Language};
 use crate::paths::StarailPaths;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -15,6 +16,7 @@ pub struct AppConfig {
     pub latency_test_url: String,
     pub latency_test_timeout: u64,
     pub shell_proxy_enabled: bool,
+    pub language: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -27,6 +29,7 @@ impl Default for AppConfig {
             latency_test_url: "https://www.gstatic.com/generate_204".to_string(),
             latency_test_timeout: 5000,
             shell_proxy_enabled: false,
+            language: None,
         }
     }
 }
@@ -61,6 +64,10 @@ impl AppConfig {
             "http://{}",
             self.controller_address.trim().trim_end_matches('/')
         )
+    }
+
+    pub fn language(&self) -> Language {
+        i18n::configured(self.language.as_deref())
     }
 
     pub fn normalized(&self) -> Self {
@@ -98,6 +105,18 @@ impl AppConfig {
             config.latency_test_timeout = Self::default().latency_test_timeout;
         }
 
+        config.language = config
+            .language
+            .as_deref()
+            .and_then(Language::from_code)
+            .map(|language| language.code().to_string());
+
         config
     }
+}
+
+pub fn app_language(paths: &StarailPaths) -> Language {
+    AppConfig::load(paths)
+        .map(|config| config.language())
+        .unwrap_or_else(|_| i18n::detect())
 }

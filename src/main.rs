@@ -2,6 +2,7 @@ mod cli;
 mod config;
 mod controller;
 mod core;
+mod i18n;
 mod paths;
 mod platform;
 mod profile;
