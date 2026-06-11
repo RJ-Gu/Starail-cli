@@ -125,7 +125,6 @@ enum Screen {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SettingsItemKind {
-    InterfaceDisplay,
     Language,
     MixedPort,
     SwitchMode,
@@ -136,7 +135,6 @@ enum SettingsItemKind {
 impl SettingsItemKind {
     fn label(self, language: Language) -> &'static str {
         match self {
-            Self::InterfaceDisplay => language.tr(Message::InterfaceDisplay),
             Self::Language => language.tr(Message::Language),
             Self::MixedPort => language.tr(Message::CustomPort),
             Self::SwitchMode => language.tr(Message::SwitchMode),
@@ -147,7 +145,6 @@ impl SettingsItemKind {
 
     fn summary(self, language: Language) -> &'static str {
         match self {
-            Self::InterfaceDisplay => language.tr(Message::InterfaceDisplaySummary),
             Self::Language => language.tr(Message::LanguageSummary),
             Self::MixedPort => language.tr(Message::CustomPortSummary),
             Self::SwitchMode => language.tr(Message::SwitchModeSummary),
@@ -158,7 +155,6 @@ impl SettingsItemKind {
 
     fn status(self, language: Language) -> &'static str {
         match self {
-            Self::InterfaceDisplay => language.tr(Message::DefaultStatus),
             Self::Language | Self::MixedPort => language.tr(Message::EditStatus),
             Self::SwitchMode | Self::Logs => language.tr(Message::OpenStatus),
             Self::CheckUpdateCore => language.tr(Message::ConfirmStatus),
@@ -167,7 +163,7 @@ impl SettingsItemKind {
 
     fn scope(self, language: Language) -> &'static str {
         match self {
-            Self::InterfaceDisplay | Self::Language => language.tr(Message::TerminalUi),
+            Self::Language => language.tr(Message::TerminalUi),
             Self::MixedPort => language.tr(Message::RuntimeConfig),
             Self::SwitchMode => language.tr(Message::MihomoController),
             Self::Logs => language.tr(Message::Runtime),
@@ -177,7 +173,6 @@ impl SettingsItemKind {
 
     fn detail(self, language: Language) -> &'static str {
         match self {
-            Self::InterfaceDisplay => language.tr(Message::InterfaceDisplayDetail),
             Self::Language => language.tr(Message::LanguageDetail),
             Self::MixedPort => language.tr(Message::CustomPortDetail),
             Self::SwitchMode => language.tr(Message::SwitchModeDetail),
@@ -212,7 +207,6 @@ impl SettingsPage {
     fn load(language: Language) -> Self {
         Self {
             items: vec![
-                SettingsItemKind::InterfaceDisplay,
                 SettingsItemKind::Language,
                 SettingsItemKind::MixedPort,
                 SettingsItemKind::SwitchMode,
@@ -1098,10 +1092,6 @@ fn handle_settings_key(
             (Screen::Settings(page), Effect::None)
         }
         KeyCode::Enter => match page.selected_item() {
-            Some(SettingsItemKind::InterfaceDisplay) => {
-                page.message = language.tr(Message::InterfaceDisplaySelected).to_string();
-                (Screen::Settings(page), Effect::None)
-            }
             Some(SettingsItemKind::Language) => {
                 (Screen::Language(LanguagePage::load(language)), Effect::None)
             }
@@ -2811,7 +2801,6 @@ mod tui_tests {
         assert_eq!(
             page.items,
             [
-                SettingsItemKind::InterfaceDisplay,
                 SettingsItemKind::Language,
                 SettingsItemKind::MixedPort,
                 SettingsItemKind::SwitchMode,
@@ -2819,12 +2808,11 @@ mod tui_tests {
                 SettingsItemKind::CheckUpdateCore,
             ]
         );
-        assert_eq!(page.items[0].label(Language::English), "Interface display");
-        assert_eq!(page.items[1].label(Language::English), "Language");
-        assert_eq!(page.items[2].label(Language::English), "Custom port");
-        assert_eq!(page.items[3].label(Language::English), "Switch mode");
-        assert_eq!(page.items[4].label(Language::English), "Logs");
-        assert_eq!(page.items[5].label(Language::English), "Check/update core");
+        assert_eq!(page.items[0].label(Language::English), "Language");
+        assert_eq!(page.items[1].label(Language::English), "Custom port");
+        assert_eq!(page.items[2].label(Language::English), "Switch mode");
+        assert_eq!(page.items[3].label(Language::English), "Logs");
+        assert_eq!(page.items[4].label(Language::English), "Check/update core");
     }
 
     #[test]
