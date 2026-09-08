@@ -66,21 +66,21 @@ jobs:
           {
             printf '## Release Activity\n\n'
             if [[ -n "$PREVIOUS_TAG" ]]; then
-              printf '- Previous release: `%s`\n' "$PREVIOUS_TAG"
+              printf -- '- Previous release: `%s`\n' "$PREVIOUS_TAG"
             else
-              printf '- Previous release: none\n'
+              printf -- '- Previous release: none\n'
             fi
-            printf '- Current release: `%s`\n\n' "$GITHUB_REF_NAME"
+            printf -- '- Current release: `%s`\n\n' "$GITHUB_REF_NAME"
 
             printf '### Issues and Pull Requests\n\n'
             sed 's/^## /### /' generated-notes.md
 
             printf '\n### Push / Commit Operations\n\n'
             if [[ "$(git rev-list --count "$RANGE")" -eq 0 ]]; then
-              printf '- No commits found in this release range.\n'
+              printf -- '- No commits found in this release range.\n'
             else
               git log --reverse --format='%H%x09%h%x09%s%x09%an' "$RANGE" | while IFS=$'\t' read -r sha short subject author; do
-                printf '- [`%s`](https://github.com/%s/commit/%s) %s (%s)\n' "$short" "$GITHUB_REPOSITORY" "$sha" "$subject" "$author"
+                printf -- '- [`%s`](https://github.com/%s/commit/%s) %s (%s)\n' "$short" "$GITHUB_REPOSITORY" "$sha" "$subject" "$author"
               done
             fi
           } > release-notes.md
