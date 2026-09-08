@@ -11,16 +11,7 @@ use crate::profile::{self, ProfileKind, ProfileMeta};
 use crate::runtime;
 use crate::util::{require_profile_name, slug_from_url, unix_timestamp};
 
-const SUBSCRIPTION_USER_AGENTS: &[&str] = &[
-    "mihomo",
-    "Mihomo",
-    "Clash.Meta",
-    "clash.meta",
-    concat!(
-        "ClashforWindows/0.20.39 starail/",
-        env!("CARGO_PKG_VERSION")
-    ),
-];
+const SUBSCRIPTION_USER_AGENT: &str = "clash.meta";
 
 pub fn add(paths: &StarailPaths, url: &str, name: Option<&str>) -> Result<()> {
     platform::require_linux()?;
@@ -136,62 +127,44 @@ fn update_one(paths: &StarailPaths, name: &str) -> Result<()> {
 }
 
 fn fetch_subscription_to(url: &str, dest: &std::path::Path) -> Result<()> {
-    println!("Downloading subscription content...");
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(60))
         .build()
         .context("failed to create HTTP client")?;
-    let mut rejected_profiles = Vec::new();
-    let mut last_format_error = None;
 
-    for user_agent in SUBSCRIPTION_USER_AGENTS {
-        println!("Trying subscription client profile: {user_agent}");
-        let bytes = download_subscription_bytes(&client, url, user_agent)?;
+    let normalized = fetch_and_normalize_subscription(url, |user_agent| {
+        download_subscription_bytes(&client, url, user_agent)
+    })?;
 
-        if bytes.is_empty() {
-            bail!("subscription download was empty: {url}");
-        }
-        println!("Downloaded {} bytes.", bytes.len());
+    println!("Writing temporary config: {}", dest.display());
+    fs::write(dest, normalized.bytes)
+        .with_context(|| format!("failed to write {}", dest.display()))?;
+    Ok(())
+}
 
-        if is_unsupported_client_response(&bytes) {
-            println!(
-                "Provider rejected client profile '{user_agent}' for this subscription; trying another profile..."
-            );
-            rejected_profiles.push(*user_agent);
-            continue;
-        }
+fn fetch_and_normalize_subscription<F>(url: &str, download: F) -> Result<NormalizedSubscription>
+where
+    F: FnOnce(&str) -> Result<Vec<u8>>,
+{
+    println!("Downloading subscription content...");
+    println!("Using subscription client profile: {SUBSCRIPTION_USER_AGENT}");
+    let bytes = download(SUBSCRIPTION_USER_AGENT)?;
 
-        println!("Parsing subscription content...");
-        let normalized = match normalize_subscription_bytes(url, &bytes) {
-            Ok(normalized) => normalized,
-            Err(error) if is_retryable_subscription_format_error(&error) => {
-                println!(
-                    "Response was not a Mihomo YAML config with client profile '{user_agent}'; trying another profile..."
-                );
-                last_format_error = Some(error);
-                continue;
-            }
-            Err(error) => return Err(error),
-        };
-        println!("Parsed subscription format: {}.", normalized.format);
-
-        println!("Writing temporary config: {}", dest.display());
-        fs::write(dest, normalized.bytes)
-            .with_context(|| format!("failed to write {}", dest.display()))?;
-        return Ok(());
+    if bytes.is_empty() {
+        bail!("subscription download was empty: {url}");
     }
+    println!("Downloaded {} bytes.", bytes.len());
 
-    if !rejected_profiles.is_empty() {
+    if is_unsupported_client_response(&bytes) {
         bail!(
-            "subscription provider rejected all compatible client profiles tried by Starail: {}. The subscription likely contains protocols such as hysteria2 or VLESS. Use the provider's Mihomo/Clash.Meta subscription URL or format flag, then try again.",
-            rejected_profiles.join(", ")
+            "subscription provider rejected Starail's Mihomo client profile. The subscription likely contains protocols such as hysteria2 or VLESS. Use the provider's Mihomo/Clash.Meta subscription URL or format flag, then try again."
         );
     }
 
-    match last_format_error {
-        Some(error) => Err(error),
-        None => bail!("subscription did not return a usable Clash/Mihomo YAML config: {url}"),
-    }
+    println!("Parsing downloaded subscription content...");
+    let normalized = normalize_subscription_bytes(url, &bytes)?;
+    println!("Parsed subscription format: {}.", normalized.format);
+    Ok(normalized)
 }
 
 fn download_subscription_bytes(
@@ -263,10 +236,6 @@ Use the provider's Clash/Mihomo subscription URL or add the provider's Clash for
         bytes: bytes.to_vec(),
         format: "raw response",
     })
-}
-
-fn is_retryable_subscription_format_error(error: &anyhow::Error) -> bool {
-    error.to_string().contains("base64 proxy-link list")
 }
 
 fn is_unsupported_client_response(bytes: &[u8]) -> bool {
@@ -415,5 +384,18 @@ mod tests {
         assert!(is_unsupported_client_response(
             "当前Clash客户端不支持本机场协议，请更换以下支持协议的代理软件".as_bytes()
         ));
+    }
+
+    #[test]
+    fn downloads_only_once_when_subscription_parsing_fails() {
+        let mut downloads = 0;
+        let error = fetch_and_normalize_subscription("https://example.test/sub", |_| {
+            downloads += 1;
+            Ok(b"c3M6Ly9leGFtcGxlCg==".to_vec())
+        })
+        .expect_err("proxy-link list should be rejected");
+
+        assert_eq!(downloads, 1);
+        assert!(error.to_string().contains("base64 proxy-link list"));
     }
 }

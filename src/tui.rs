@@ -1973,12 +1973,28 @@ fn header_status_spans(
                 status_value_style(process_tone(&status.process)),
             ),
             Span::styled(
-                format!(" | {}: ", language.tr(Message::Active)),
+                format!(" | {}: ", language.tr(Message::ActiveProfile)),
                 status_label_style(),
             ),
             Span::styled(
                 status_display_value(&status.active_profile, language),
                 status_value_style(profile_tone(&status.active_profile)),
+            ),
+            Span::styled(
+                format!(" | {}: ", language.tr(Message::CurrentGroup)),
+                status_label_style(),
+            ),
+            Span::styled(
+                status_display_value(&status.current_group, language),
+                status_value_style(selected_proxy_tone(&status.current_group)),
+            ),
+            Span::styled(
+                format!(" | {}: ", language.tr(Message::CurrentNode)),
+                status_label_style(),
+            ),
+            Span::styled(
+                status_display_value(&status.current_node, language),
+                status_value_style(selected_proxy_tone(&status.current_node)),
             ),
         ],
         None => vec![Span::styled(
@@ -2857,6 +2873,38 @@ mod tui_tests {
         assert_eq!(
             status_display_value("Proxy -> Node (+2 groups)", language),
             "Proxy -> Node (+2 组)"
+        );
+    }
+
+    #[test]
+    fn header_status_includes_profile_group_and_node() {
+        let snapshot = status::StatusSnapshot {
+            home: "/tmp/.starail".to_string(),
+            core: "managed".to_string(),
+            core_version: "1.0.0".to_string(),
+            active_profile: "yfjc".to_string(),
+            selected_proxy: "自动选择 -> 节点 A".to_string(),
+            current_group: "自动选择".to_string(),
+            current_node: "节点 A".to_string(),
+            mixed_port: 7890,
+            controller: "http://127.0.0.1:9090".to_string(),
+            process: "running (pid 2532823)".to_string(),
+            controller_state: "reachable (mode: rule)".to_string(),
+        };
+
+        let rendered = header_status_spans(Some(&snapshot), Language::SimplifiedChinese)
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert_eq!(
+            rendered,
+            concat!(
+                "进程: 运行中 (pid 2532823)",
+                " | 当前配置: yfjc",
+                " | 当前组: 自动选择",
+                " | 当前节点: 节点 A"
+            )
         );
     }
 

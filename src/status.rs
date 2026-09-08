@@ -17,6 +17,8 @@ pub struct StatusSnapshot {
     pub core_version: String,
     pub active_profile: String,
     pub selected_proxy: String,
+    pub current_group: String,
+    pub current_node: String,
     pub mixed_port: u16,
     pub controller: String,
     pub process: String,
@@ -41,7 +43,8 @@ pub fn collect(paths: &StarailPaths) -> Result<StatusSnapshot> {
         .unwrap_or("none")
         .to_string();
     let preferred_groups = preferred_proxy_groups(paths, &active_profile);
-    let (controller_state, selected_proxy) = controller_status(paths, &preferred_groups);
+    let (controller_state, selected_proxy, current_group, current_node) =
+        controller_status(paths, &preferred_groups);
 
     Ok(StatusSnapshot {
         home: paths.home.display().to_string(),
@@ -49,6 +52,8 @@ pub fn collect(paths: &StarailPaths) -> Result<StatusSnapshot> {
         core_version: core::version_string(paths).unwrap_or_else(|_| "unavailable".to_string()),
         active_profile,
         selected_proxy,
+        current_group,
+        current_node,
         mixed_port: app_config.mixed_port,
         controller: app_config.controller_base(),
         process,
@@ -56,13 +61,26 @@ pub fn collect(paths: &StarailPaths) -> Result<StatusSnapshot> {
     })
 }
 
-fn controller_status(paths: &StarailPaths, preferred_groups: &[String]) -> (String, String) {
+fn controller_status(
+    paths: &StarailPaths,
+    preferred_groups: &[String],
+) -> (String, String, String, String) {
     match controller::get_configs(paths) {
-        Ok(configs) => (
-            controller_state_from_configs(&configs),
-            selected_proxy(paths, preferred_groups),
+        Ok(configs) => {
+            let (summary, group, node) = selected_proxy(paths, preferred_groups);
+            (
+                controller_state_from_configs(&configs),
+                summary,
+                group,
+                node,
+            )
+        }
+        Err(_) => (
+            "unreachable".to_string(),
+            "unavailable".to_string(),
+            "unavailable".to_string(),
+            "unavailable".to_string(),
         ),
-        Err(_) => ("unreachable".to_string(), "unavailable".to_string()),
     }
 }
 
@@ -78,11 +96,15 @@ fn controller_state_from_configs(configs: &Value) -> String {
     }
 }
 
-fn selected_proxy(paths: &StarailPaths, preferred_groups: &[String]) -> String {
+fn selected_proxy(paths: &StarailPaths, preferred_groups: &[String]) -> (String, String, String) {
     match controller::get_proxies(paths) {
-        Ok(proxies) => selected_proxy_from_json(&proxies, preferred_groups)
-            .unwrap_or_else(|| "none".to_string()),
-        Err(_) => "unavailable".to_string(),
+        Ok(proxies) => selected_proxy_details_from_json(&proxies, preferred_groups)
+            .unwrap_or_else(|| ("none".to_string(), "none".to_string(), "none".to_string())),
+        Err(_) => (
+            "unavailable".to_string(),
+            "unavailable".to_string(),
+            "unavailable".to_string(),
+        ),
     }
 }
 
@@ -98,7 +120,15 @@ impl ProxySelection {
     }
 }
 
+#[cfg(test)]
 fn selected_proxy_from_json(json: &Value, preferred_groups: &[String]) -> Option<String> {
+    selected_proxy_details_from_json(json, preferred_groups).map(|(summary, _, _)| summary)
+}
+
+fn selected_proxy_details_from_json(
+    json: &Value,
+    preferred_groups: &[String],
+) -> Option<(String, String, String)> {
     let selections = proxy_selections_from_json(json)?;
     let mut visible = preferred_proxy_selections(&selections, preferred_groups);
     let using_preferred_order = !visible.is_empty();
@@ -123,11 +153,12 @@ fn selected_proxy_from_json(json: &Value, preferred_groups: &[String]) -> Option
 
     let total = visible.len();
     let first = visible.into_iter().next()?;
-    if total > 1 {
-        Some(format!("{} (+{} groups)", first.label(), total - 1))
+    let summary = if total > 1 {
+        format!("{} (+{} groups)", first.label(), total - 1)
     } else {
-        Some(first.label())
-    }
+        first.label()
+    };
+    Some((summary, first.name.clone(), first.now.clone()))
 }
 
 fn proxy_selections_from_json(json: &Value) -> Option<Vec<ProxySelection>> {
